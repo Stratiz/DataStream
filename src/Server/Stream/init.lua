@@ -54,25 +54,7 @@ local function MakeSignal()
 	return newSignal
 end
 
-local function deepCopy(target, _context)
-	_context = _context or  {}
-	if _context[target] then
-		return _context[target]
-	end
-
-	if type(target) == "table" then
-		local new = {}
-		_context[target] = new
-		for index, value in pairs(target) do
-			new[deepCopy(index, _context)] = deepCopy(value, _context)
-		end
-		return setmetatable(new, deepCopy(getmetatable(target), _context))
-	else
-		return target
-	end
-end
-
-local function validateStreamName(name : string)
+local function ValidateStreamName(name : string)
     if Streams.Global[name] or Streams.Player[name] then
         error("Schema already exists with name: " .. name)
     end
@@ -81,30 +63,51 @@ local function validateStreamName(name : string)
     end
 end
 
+local function CreatePlayerStreamCatcher(name)
+    local playerStreamCache = {}
+    local proxy = newproxy(true)
+    local metatable = getmetatable(proxy)
+    
+    metatable.__newindex = function(self,Index,Value)
+        local targetIndex = StreamUtils.ResolvePlayerSchemaIndex(Index)
+        local targetPlayer = Players:GetPlayerByUserId(targetIndex)
+
+        if targetPlayer then
+            playerStreamCache[targetIndex] = Value
+            if Value == nil then
+                StreamMeta:TriggerReplicate(targetPlayer, name, "", Value)
+            end
+        else
+            warn("Player not found for index: " .. targetIndex)
+        end
+        return self
+    end
+    
+    metatable.__index = function(self, Index)
+        local targetIndex = StreamUtils.ResolvePlayerSchemaIndex(Index)
+        return playerStreamCache[targetIndex]
+    end
+
+    metatable.__tostring = function()
+        return `PlayerStreamIndexCatcher ({name})`
+    end
+
+    metatable._playerStreamCache = playerStreamCache
+
+    return proxy
+end
+
 --= API Functions =--
 Stream.PlayerStreamAdded = MakeSignal()
 Stream.PlayerStreamRemoving = MakeSignal()
 
 function Stream:AddPlayerStreamTemplate(name : string, schema : {[any] : any})
-    validateStreamName(name)
+    ValidateStreamName(name)
 
-    Streams.Player[name] = setmetatable({}, {
-        __newindex = function(Table,Index,Value)
-            --warn("Overwriting entire player data table! Are you really sure you should be doing this?")
+    Streams.Player[name] = CreatePlayerStreamCatcher(name)
 
-            local targetIndex = StreamUtils.ResolvePlayerSchemaIndex(Index)
-            local targetPlayer = Players:GetPlayerByUserId(targetIndex)
-            if targetPlayer then
-                rawset(Streams.Player[name], targetIndex, Value)
-                StreamMeta:TriggerReplicate(targetPlayer,name,"",Value)
-            else
-                warn("Player not found for index: " .. targetIndex)
-            end
-            return Table
-        end
-    })
     Players.PlayerAdded:Connect(function(player)
-        self:MakePlayerStream(name, player, deepCopy(schema))
+        self:MakePlayerStream(name, player, StreamUtils:DeepCopyTable(schema))
     end)
 
     Players.PlayerRemoving:Connect(function(player)
@@ -113,30 +116,34 @@ function Stream:AddPlayerStreamTemplate(name : string, schema : {[any] : any})
 end
 
 function Stream:MakePlayerStream(name : string, player : Player, schema : {[any] : any})
+
     if not Streams.Player[name] then
-        Streams.Player[name] = {}
+        ValidateStreamName(name)
+        Streams.Player[name] = CreatePlayerStreamCatcher(name)
     end
 
     local playerIndex = StreamUtils.ResolvePlayerSchemaIndex(player)
-    local newStream = StreamMeta:MakeStreamObject(schema, player)
+    local newStream = StreamMeta:MakeStreamObject(name, schema, player)
     Streams.Player[name][playerIndex] = newStream
 
-    Stream.PlayerStreamAdded:Fire(name, player, newStream)
+    Stream.PlayerStreamAdded:Fire(name, player)
     return newStream
 end
 
 function Stream:RemovePlayerStream(name : string, player : Player)
     local playerIndex = StreamUtils.ResolvePlayerSchemaIndex(player)
 
-    Stream.PlayerStreamRemoving:Fire(name, player, Streams.Player[name][playerIndex])
+    Stream.PlayerStreamRemoving:Fire(name, player)
 
-    Streams.Player[name][playerIndex] = nil
+    task.defer(function()
+        Streams.Player[name][playerIndex] = nil
+    end)
 end
 
 function Stream:MakeGlobalStream(name : string, schema : {[any] : any})
-    validateStreamName(name)
+    ValidateStreamName(name)
 
-    Streams.Global[name] = StreamMeta:MakeStreamObject(schema)
+    Streams.Global[name] = StreamMeta:MakeStreamObject(name, schema)
 end
 
 --= Initializers =--
@@ -181,6 +188,29 @@ do
             end
         end
     end
+end
+
+function Stream:GetPlayersInStream(name : string) : {Player}
+    local globalStream = Streams.Global[name]
+    if globalStream then
+        return Players:GetPlayers()
+    end
+
+    local playerStream = Streams.Player[name]
+    if not playerStream then
+        error("Attempt to get players in non-existent schema '"..tostring(name).."'")
+    end
+
+    local metatable = getmetatable(playerStream)
+
+    local toReturn = {}
+    for playerIndex, _ in pairs(metatable._playerStreamCache) do
+        local player = Players:GetPlayerByUserId(playerIndex)
+        if player then
+            table.insert(toReturn, player)
+        end
+    end
+    return toReturn
 end
 
 --= Return Module =--

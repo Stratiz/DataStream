@@ -12,24 +12,6 @@ local StreamUtils = require(script.Parent:WaitForChild("StreamUtils")) ---@modul
 
 local DataUpdateEvent = StreamUtils.MakeRemote("Event", "DataUpdateEvent")
 
-local function deepCopy(target, _context)
-	_context = _context or  {}
-	if _context[target] then
-		return _context[target]
-	end
-
-	if type(target) == "table" then
-		local new = {}
-		_context[target] = new
-		for index, value in pairs(target) do
-			new[deepCopy(index, _context)] = deepCopy(value, _context)
-		end
-		return setmetatable(new, deepCopy(getmetatable(target), _context))
-	else
-		return target
-	end
-end
-
 local function MakeSignal() : Signal
 	local BindableEvent = Instance.new("BindableEvent")
 	local Signal = {}
@@ -49,8 +31,8 @@ local function MakeSignal() : Signal
 end
 
 Players.PlayerRemoving:Connect(function(player)
-    local TargetIndex,_ = StreamUtils.ResolvePlayerSchemaIndex(player)
-    if TargetIndex then
+    local TargetIndex = StreamUtils.ResolvePlayerSchemaIndex(player)
+    if TargetIndex and SignalCache[TargetIndex] then
         for _,Signal in pairs(SignalCache[TargetIndex]) do
             Signal:Destroy()
         end
@@ -134,7 +116,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
             local CatcherMeta = getmetatable(dataObject)
             if CatcherMeta.LastTable[NextIndex] ~= nil then
                 local NextMetaTable = StreamUtils.CopyTable(CatcherMeta)
-                if type(NextMetaTable.ListTable[NextIndex]) == "table" then
+                if type(NextMetaTable.LastTable[NextIndex]) == "table" then
                     NextMetaTable.LastTable = NextMetaTable.LastTable[NextIndex]
                 else
                     NextMetaTable.FinalIndex = NextIndex

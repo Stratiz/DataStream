@@ -39,7 +39,6 @@ local GetData = RemotesFolder:WaitForChild("GetData")
 local Binds = {}
 local RawWarn = warn
 local RawPrint = print
-local Initialized = false
 
 --= Internal Functions =--
 local function warn(...)
@@ -73,75 +72,70 @@ local function MakeSignal()
 end
 
 --= API Functions =--
-function DataStreamClient:GetChangedSignal(Path: string)
-	if not Binds[Path] then
-		local NewSignal = MakeSignal()
-		Binds[Path] = {
-			Signal = NewSignal
+function DataStreamClient:GetChangedSignal(path: string)
+	if not Binds[path] then
+		local newSignal = MakeSignal()
+		Binds[path] = {
+			Signal = newSignal
 		}
-		return NewSignal
+		return newSignal
 	else
-		return Binds[Path].Signal
+		return Binds[path].Signal
 	end
 end
 
 --= Initializers =--
-function DataStreamClient:Init()
-	if Initialized then return end
-	Initialized = true
-
+do
 	--// Fetch stores from server
-	for Name, Data in pairs(GetData:InvokeServer()) do
-		DataStreamClient[Name] = Data
-	end	
+	for name, data in pairs(GetData:InvokeServer()) do
+		DataStreamClient[name] = data
+	end
 	
 	--// Listen for updates
-	DataUpdateEvent.OnClientEvent:Connect(function(Name,Path,Value)
-		if not self[Name] then
-			self[Name] = {}
+	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : string, value : any?)
+		if not DataStreamClient[name] then
+			DataStreamClient[name] = {}
 		end
 		--print("DATA REPLICATED", Path)
 		--print("Data updated: "..(Path or "ALL"))
-		local Current = self[Name]
+		local Current = DataStreamClient[name]
 		local OldValue
-		local PathKeys = Path and Path:split(".") or {}
+		local PathKeys = path and path:split(".") or {}
 		if #PathKeys == 0 then
-			Current = Value
+			Current = value
 		end
 		for Index,NextKey in pairs(PathKeys) do
 			if type(Current) == "table" then
 				NextKey = tonumber(NextKey) or NextKey
 				if Index >= #PathKeys then
 					OldValue = Current[NextKey]
-					Current[NextKey] = Value
+					Current[NextKey] = value
 				elseif Current[NextKey] then
 					Current = Current[NextKey]
 				else
-					warn("Path error | "..Path)
+					warn("Path error | "..path)
 					warn("Data may be out of sync, re-syncing with server...")
-					self[Name] = GetData:InvokeServer(Name)
+					DataStreamClient[name] = GetData:InvokeServer(name)
 				end
 			else
-				warn("Invalid path | "..Path)
+				warn("Invalid path | "..path)
 			end
 		end
 		if #PathKeys == 0 then
-			self[Name] = Value
+			DataStreamClient[name] = value
 		end
 		---
 		--print(self.Data)
 		-- Changed event
-		local PathForBinds = Name.."."..Path
+		local PathForBinds = name.."."..path
 		for BindPath,Bind in pairs(Binds) do
-			local StringStart,_ = string.find(PathForBinds or "",BindPath)
+			local StringStart, _ = string.find(PathForBinds or "",BindPath)
 			if BindPath == PathForBinds or StringStart == 1 then
-				Bind.ToFire:Fire(Value,OldValue,PathForBinds)
+				Bind.ToFire:Fire(value, OldValue, PathForBinds)
 			end
 		end
 	end)
 end
-
-DataStreamClient:Init() -- DELETE ME IF YOU HAVE A BETTER WAY TO INITIALIZE
 
 --= Return Module =--
 return DataStreamClient

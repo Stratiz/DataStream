@@ -37,7 +37,7 @@ function DataStreamUtils:DeepCopy(target, _context)
 end
 
 function DataStreamUtils:WaitForNext(requestType : Enum)
-	while not DataStoreService:GetRequestBudgetForRequestType(requestType) >= DATASTORE_BUFFER_SIZE do
+	while not (DataStoreService:GetRequestBudgetForRequestType(requestType) >= DATASTORE_BUFFER_SIZE) do
 		task.wait()
 	end
 end
