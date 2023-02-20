@@ -8,7 +8,7 @@
 	
 	Documentation:
 		To read the auto-replicated player data, index the module with the name of the table.
-		For example, DataStream by default has .Temp and .Stored tables. 
+		For example, DataStream by default has .Temp and .Stored tables.
 		To read the Temp table, use DataStreamClient.Temp, same thing with .Stored and any other tables you add.
 
 		Any modifications to the data will not be replicated to the server, and will be overwritten by the server's data.
@@ -29,9 +29,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 --= Dependencies =--
 
 --= Object References =--
-local RemotesFolder = ReplicatedStorage:WaitForChild("_DATASTREAM_REMOTES")
+local RemotesFolder = ReplicatedStorage:WaitForChild("_STREAM_REMOTES")
 local DataUpdateEvent = RemotesFolder:WaitForChild("DataUpdateEvent")
-local InitDataGet = RemotesFolder:WaitForChild("DataGetFunction")
+local GetData = RemotesFolder:WaitForChild("GetData")
 
 --= Constants =--
 
@@ -43,59 +43,45 @@ local Initialized = false
 
 --= Internal Functions =--
 local function warn(...)
-	RawWarn("[DataStreamClient]", ...)
+	RawWarn("[StreamClient]", ...)
 end
 
 local function print(...)
-	RawPrint("[DataStreamClient]", ...)
+	RawPrint("[StreamClient]", ...)
 end
 
-local function MakeSignal() : {[any] : any}
-	local NewSignal = {}
-
-	NewSignal._Connections = {}
-	NewSignal._Bindable = Instance.new("BindableEvent")
-	
-	function NewSignal:Fire(... : any) : nil
-		self._Bindable:Fire(...)
+local function MakeSignal()
+	local bindableEvent = Instance.new("BindableEvent")
+	local newSignal = {}
+	function newSignal:Connect(toExecute : (any) -> ()) : RBXScriptConnection
+		return bindableEvent.Event:Connect(toExecute)
 	end
 
-	function NewSignal:Connect(handler : (any) -> (any)) : RBXScriptConnection
-		local NewConnection = self._Bindable.Event:Connect(handler)
-		table.insert(self._Connections, NewConnection)
-		return NewConnection
+	function newSignal:Once(toExecute : (any) -> ()) : RBXScriptConnection
+		return bindableEvent.Event:Once(toExecute)
 	end
 
-	function NewSignal:Disconnect() : nil
-		for _,Connection in self._Connections do
-			Connection:Disconnect()
-		end
-		self._Bindable:Destroy()
+	function newSignal:Fire(... : any)
+		bindableEvent:Fire(...)
 	end
 
-	return NewSignal
+	function newSignal:Wait() : any
+		return bindableEvent.Event:Wait()
+	end
+
+	return newSignal
 end
 
 --= API Functions =--
 function DataStreamClient:GetChangedSignal(Path: string)
 	if not Binds[Path] then
 		local NewSignal = MakeSignal()
-		NewSignal._Disconnect = NewSignal.Disconnect
-		function NewSignal:Disconnect()
-			Binds[Path].InUseBy -= 1
-			if Binds[Path].InUseBy <= 0 then
-				Binds[Path] = nil
-				self:_Disconnect()
-			end
-		end
 		Binds[Path] = {
-			ToFire = NewSignal,
-			InUseBy = 1
+			Signal = NewSignal
 		}
 		return NewSignal
 	else
-		Binds[Path].InUseBy += 1
-		return Binds[Path].ToFire
+		return Binds[Path].Signal
 	end
 end
 
@@ -105,7 +91,7 @@ function DataStreamClient:Init()
 	Initialized = true
 
 	--// Fetch stores from server
-	for Name, Data in pairs(InitDataGet:InvokeServer()) do
+	for Name, Data in pairs(GetData:InvokeServer()) do
 		DataStreamClient[Name] = Data
 	end	
 	
@@ -133,7 +119,7 @@ function DataStreamClient:Init()
 				else
 					warn("Path error | "..Path)
 					warn("Data may be out of sync, re-syncing with server...")
-					self[Name] = InitDataGet:InvokeServer()
+					self[Name] = GetData:InvokeServer(Name)
 				end
 			else
 				warn("Invalid path | "..Path)

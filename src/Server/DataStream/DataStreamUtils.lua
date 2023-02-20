@@ -3,18 +3,19 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStreamUtils = {}
 
 local DATASTORE_BUFFER_SIZE = 5
+local CONFIG = require(script.Parent:WaitForChild("DataStreamConfig"))
 
 function DataStreamUtils.ResolveIndex(Index)
 	local TargetIndex = nil
 	local UserId = nil
 	if typeof(Index) == "Instance" then
-		TargetIndex = "DATA_"..Index.UserId
+		TargetIndex = CONFIG.DATASTORE_ENTRY_PREFIX..Index.UserId
 		UserId = Index.UserId
 	elseif tonumber(Index) then
-		TargetIndex = "DATA_"..Index
+		TargetIndex = CONFIG.DATASTORE_ENTRY_PREFIX..Index
 		UserId = Index
 	end
-	return TargetIndex,UserId
+	return TargetIndex, UserId
 end
 
 function DataStreamUtils:DeepCopy(target, _context)
@@ -33,22 +34,6 @@ function DataStreamUtils:DeepCopy(target, _context)
 	else
 		return target
 	end
-	
-end
-
-function DataStreamUtils:MakeRemote(remoteType : "Function" | "Event", name : string)
-	local RemoteFolder = ReplicatedStorage:FindFirstChild("_DATASTREAM_REMOTES")
-	if not RemoteFolder then
-		RemoteFolder = Instance.new("Folder")
-		RemoteFolder.Name = "_DATASTREAM_REMOTES"
-		RemoteFolder.Parent = ReplicatedStorage
-	end
-
-	local NewRemote = Instance.new("Remote"..remoteType)
-	NewRemote.Name = name
-	NewRemote.Parent = RemoteFolder
-
-	return NewRemote
 end
 
 function DataStreamUtils:WaitForNext(requestType : Enum)
@@ -63,7 +48,5 @@ function DataStreamUtils:InvokeOnNext(requestType : Enum, callback : () -> ())
 		callback()
 	end)
 end
-
-
 
 return DataStreamUtils
