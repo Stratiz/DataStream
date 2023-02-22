@@ -1,11 +1,11 @@
 local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local DataStreamUtils = {}
+local PlayerDataUtils = {}
 
 local DATASTORE_BUFFER_SIZE = 5
-local CONFIG = require(script.Parent:WaitForChild("DataStreamConfig"))
+local CONFIG = require(script.Parent:WaitForChild("PlayerDataConfig"))
 
-function DataStreamUtils.ResolveIndex(Index)
+function PlayerDataUtils.ResolveIndex(Index)
 	local TargetIndex = nil
 	local UserId = nil
 	if typeof(Index) == "Instance" then
@@ -18,7 +18,7 @@ function DataStreamUtils.ResolveIndex(Index)
 	return TargetIndex, UserId
 end
 
-function DataStreamUtils:DeepCopy(target, _context)
+function PlayerDataUtils:DeepCopy(target, _context)
 	_context = _context or  {}
 	if _context[target] then
 		return _context[target]
@@ -36,17 +36,17 @@ function DataStreamUtils:DeepCopy(target, _context)
 	end
 end
 
-function DataStreamUtils:WaitForNext(requestType : Enum)
+function PlayerDataUtils:WaitForNext(requestType : Enum)
 	while not (DataStoreService:GetRequestBudgetForRequestType(requestType) >= DATASTORE_BUFFER_SIZE) do
 		task.wait()
 	end
 end
 
-function DataStreamUtils:InvokeOnNext(requestType : Enum, callback : () -> ())
+function PlayerDataUtils:InvokeOnNext(requestType : Enum, callback : () -> ())
 	task.spawn(function()
 		self:WaitForNext(requestType)
 		callback()
 	end)
 end
 
-return DataStreamUtils
+return PlayerDataUtils

@@ -1,6 +1,6 @@
 return {
-    STREAM_MODULE = shared("Stream"),
-    STREAM_SCHEMA_NAME = "Stored",
+    TABLE_REPLICATOR_MODULE = shared("TableReplicator"),
+    SCHEMA_NAME = "Stored",
 
     DATASTORE_NAME = "BETA_1",
     DATASTORE_ENTRY_PREFIX = "DATA_",

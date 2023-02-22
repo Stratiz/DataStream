@@ -1,7 +1,7 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local StreamUtils = {}
+local TableReplicator = {}
 
-function StreamUtils.ResolvePlayerSchemaIndex(index : number | Player)
+function TableReplicator.ResolvePlayerSchemaIndex(index : number | Player)
     if typeof(index) == "Instance" and index:IsA("Player") then
         return tostring(index.UserId)
     elseif type(index) == "number" or type(index) == "string" and tonumber(index) then
@@ -11,11 +11,11 @@ function StreamUtils.ResolvePlayerSchemaIndex(index : number | Player)
     end
 end
 
-function StreamUtils.MakeRemote(remoteType : "Function" | "Event", name : string)
-	local RemoteFolder = ReplicatedStorage:FindFirstChild("_STREAM_REMOTES")
+function TableReplicator.MakeRemote(remoteType : "Function" | "Event", name : string)
+	local RemoteFolder = ReplicatedStorage:FindFirstChild("_TABLE_REPLICATION_REMOTES")
 	if not RemoteFolder then
 		RemoteFolder = Instance.new("Folder")
-		RemoteFolder.Name = "_STREAM_REMOTES"
+		RemoteFolder.Name = "_TABLE_REPLICATION_REMOTES"
 		RemoteFolder.Parent = ReplicatedStorage
 	end
 
@@ -26,7 +26,7 @@ function StreamUtils.MakeRemote(remoteType : "Function" | "Event", name : string
 	return NewRemote
 end
 
-function StreamUtils.CopyTable(target)
+function TableReplicator.CopyTable(target)
 	local new = {}
 	for key, value in pairs(target) do
 		new[key] = value
@@ -34,7 +34,7 @@ function StreamUtils.CopyTable(target)
 	return new
 end
 
-function StreamUtils:DeepCopyTable(target, _context)
+function TableReplicator:DeepCopyTable(target, _context)
     _context = _context or  {}
     if _context[target] then
         return _context[target]
@@ -52,4 +52,4 @@ function StreamUtils:DeepCopyTable(target, _context)
     end
 end
 
-return StreamUtils
+return TableReplicator

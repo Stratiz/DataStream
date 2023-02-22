@@ -1,23 +1,3 @@
--- Stratiz 2021
--- My take on datastores
-
---[[
-This system was developed for personal use, it features a very unique way of interacting with data and replicating data accordingly.
-
-Player data is indexed via:
-
-PlayerData.Data[Player].Currency.Souls:Read() -- Reads data
-PlayerData.Data[Player].Currency.Souls = 10 -- Sets data
-
-Why? Because this allows for automatic replication of data to clients, triggering of artificial events such as changed and more without the need to call a function like:
-OtherDataSystem:Set(Player,"Currency.Souls",Value)
-
--- That type of function doesnt suck, but it creates a slightly slower workflow.
-
-Only downside is you have to do :Read() when getting data.
-
---]]
-
 --[[
 	init.lua
 	Stratiz
@@ -31,7 +11,7 @@ Only downside is you have to do :Read() when getting data.
 --]]
 
 --= Root =--
-local DataStream = { }
+local PlayerData = { }
 
 --= Roblox Services =--
 local HttpService = game:GetService("HttpService")
@@ -39,15 +19,15 @@ local MessagingService = game:GetService("MessagingService")
 local DataStoreService = game:GetService("DataStoreService")
 
 --= Dependencies =--
-local DataUtils = require(script:WaitForChild("DataStreamUtils"))
-local VersioningModule = require(script:WaitForChild("DataStreamVersioning"))
+local DataUtils = require(script:WaitForChild("PlayerDataUtils"))
+local VersioningModule = require(script:WaitForChild("PlayerDataVersioning"))
 
 --= Object References =--
-local PlayerData = nil;
+local PlayerReplicators = nil;
 
 --= Constants =--
 local JOB_ID = (game.JobId == nil or game.JobId == "" ) and "STUDIO_"..HttpService:GenerateGUID(false) or game.JobId
-local CONFIG = require(script:WaitForChild("DataStreamConfig"))
+local CONFIG = require(script:WaitForChild("PlayerDataConfig"))
 local DATASTORE = DataStoreService:GetDataStore(CONFIG.DATASTORE_NAME)
 
 --= Variables =--
@@ -59,27 +39,27 @@ local ExtantServers = {}
 
 --= Internal Functions =--
 local function warn(...)
-	RawWarn("[DataStream]", ...)
+	RawWarn("[PlayerData]", ...)
 end
 
 local function print(...)
-	RawPrint("[DataStream]", ...)
+	RawPrint("[PlayerData]", ...)
 end
 
-local function SaveData(userId : number, setLock : boolean, stream : any?)
+local function SaveData(userId : number, setLock : boolean, replicator : any?)
 	if not ((CONFIG.SAVE_IN_STUDIO and InStudio) or not InStudio) then print("Will not save data. (SAVE_IN_STUDIO = false)") return end
 
-	if not stream and PlayerData[userId] then
-		stream = PlayerData[userId]
+	if not replicator and PlayerReplicators[userId] then
+		replicator = PlayerReplicators[userId]
 	end
 	
-	if not stream then
+	if not replicator then
 		warn("No data was provided. Will not save")
 		return
 	end
 
-	local DataToSave = DataUtils:DeepCopy(stream:Read())
-	local dataMetaData = getmetatable(stream)._dataStream
+	local DataToSave = DataUtils:DeepCopy(replicator:Read())
+	local dataMetaData = getmetatable(replicator)._PlayerData
 
 	Saving += 1
 	DataUtils:InvokeOnNext(Enum.DataStoreRequestType.SetIncrementAsync, function()
@@ -125,8 +105,8 @@ local function DoGetAsync(player)
 	end
 end
 
-local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
-	local metaData = getmetatable(stream)._dataStream
+local function GetAndApplyData(player, replicator, _isRetry, _sentQuery)
+	local metaData = getmetatable(replicator)._PlayerData
 
 	if metaData.Loading and _isRetry == nil then
 		print("Data is loading, will not retry yet")
@@ -141,7 +121,7 @@ local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
 			return DoGetAsync(player)
 		else
 			print("Providing default data (LOAD_IN_STUDIO = false)")
-			return stream:Read(), {}
+			return replicator:Read(), {}
 		end
 	end)
 	if data == "" then
@@ -162,7 +142,7 @@ local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
 		if not keyMetaData.Lock then
 			task.spawn(function()
 				SaveData(player.UserId, true)
-				stream:Write(data)
+				replicator:Write(data)
 				metaData.DataApplied = true
 			end)
 		else --//TODO: Figure out what to do if a server still obviously has someones data
@@ -197,8 +177,8 @@ local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
 				end
 			end
 
-			if PlayerData[player] then -- Making sure the data is still needed
-				GetAndApplyData(player, stream, (_isRetry or 0) + 1, sentQuery)
+			if PlayerReplicators[player] then -- Making sure the data is still needed
+				GetAndApplyData(player, replicator, (_isRetry or 0) + 1, sentQuery)
 			else
 				print("Player left while data was still retrying.")
 			end
@@ -207,8 +187,8 @@ local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
 		warn("Datastore failed: "..data)
 		print("Retrying data get...")
 
-		if PlayerData[player] then -- Making sure the data is still needed
-			GetAndApplyData(player, stream)
+		if PlayerReplicators[player] then -- Making sure the data is still needed
+			GetAndApplyData(player, replicator)
 		else
 			print("Player left while data was still loading.")
 		end
@@ -219,14 +199,14 @@ local function GetAndApplyData(player, stream, _isRetry, _sentQuery)
 end
 
 local function TriggerAutosave(RemoveLock)
-	for _, player in pairs(CONFIG.STREAM_MODULE:GetPlayersInStream(CONFIG.STREAM_SCHEMA_NAME)) do
-		local stream = PlayerData[player]
-		if stream then
-			local metaData = getmetatable(stream)._dataStream
+	for _, player in pairs(CONFIG.TABLE_REPLICATOR_MODULE:GetPlayersWithSchema(CONFIG.SCHEMA_NAME)) do
+		local replicator = PlayerReplicators[player]
+		if replicator then
+			local metaData = getmetatable(replicator)._PlayerData
 			if metaData then
 				if metaData.DataApplied == true and tick() - (metaData.LastSaveTick or 0) > 6 then
 					print("Autosaving data for", player)
-					SaveData(player.UserId, RemoveLock or false, stream)
+					SaveData(player.UserId, RemoveLock or false, replicator)
 				end
 			end
 		end
@@ -234,67 +214,67 @@ local function TriggerAutosave(RemoveLock)
 end
 
 --= API Functions =--
-function DataStream:ForceSave()
+function PlayerData:ForceSave()
 	TriggerAutosave(true)
 	--self:WaitForSave()
 end
 
-function DataStream:IsDataLoaded(RawKey) : boolean | nil
-	local targetStream = PlayerData[RawKey]
-	if targetStream then
-		local metaData = getmetatable(targetStream)._dataStream
+function PlayerData:IsDataLoaded(RawKey) : boolean | nil
+	local targetreplicator = PlayerReplicators[RawKey]
+	if targetreplicator then
+		local metaData = getmetatable(targetreplicator)._PlayerData
 		if metaData then
 			return not metaData.DataApplied
 		end
 	end
 end
 
-function DataStream:WaitForLoad(RawKey)
+function PlayerData:WaitForLoad(RawKey)
 	while not self:IsDataLoaded(RawKey) do
 		task.wait()
 	end
 end
 
 do -- Initializer
-	PlayerData = CONFIG.STREAM_MODULE[CONFIG.STREAM_SCHEMA_NAME]
+	PlayerReplicators = CONFIG.TABLE_REPLICATOR_MODULE[CONFIG.SCHEMA_NAME]
 
-	if not PlayerData then
+	if not PlayerReplicators then
 		error("No schema found!")
 	end
 
-	local function addPlayer(player, stream)
-		print("Adding player to data stream", player, stream)
-		local streamMetaData = getmetatable(stream)
-		streamMetaData._dataStream = {
+	local function addPlayer(player, replicator)
+		print("Adding player to data replicator", player, replicator)
+		local replicatorMetaData = getmetatable(replicator)
+		replicatorMetaData._PlayerData = {
 			DataApplied = false,
 			Loading = false,
 			RetryCount = 0,
 			LastSaveTick = 0,
 		}
-		GetAndApplyData(player, stream)
+		GetAndApplyData(player, replicator)
 	end
 
-	for _, player in pairs(CONFIG.STREAM_MODULE:GetPlayersInStream(CONFIG.STREAM_SCHEMA_NAME)) do
-		addPlayer(player, PlayerData[player])
+	for _, player in pairs(CONFIG.TABLE_REPLICATOR_MODULE:GetPlayersWithSchema(CONFIG.SCHEMA_NAME)) do
+		addPlayer(player, PlayerReplicators[player])
 	end
 
-	CONFIG.STREAM_MODULE.PlayerStreamAdded:Connect(function(name, player)
-		print(PlayerData)
-		if name == CONFIG.STREAM_SCHEMA_NAME then
-			addPlayer(player, PlayerData[player])
+	CONFIG.TABLE_REPLICATOR_MODULE.PlayerReplicatorAdded:Connect(function(name, player)
+		print(PlayerReplicators)
+		if name == CONFIG.SCHEMA_NAME then
+			addPlayer(player, PlayerReplicators[player])
 		end
 	end)
 
-	CONFIG.STREAM_MODULE.PlayerStreamRemoving:Connect(function(name, player)
-		if name == CONFIG.STREAM_SCHEMA_NAME then
-			local stream = PlayerData[player]
-			local metaData = getmetatable(stream)._dataStream
+	CONFIG.TABLE_REPLICATOR_MODULE.PlayerReplicatorRemoving:Connect(function(name, player)
+		if name == CONFIG.SCHEMA_NAME then
+			local replicator = PlayerReplicators[player]
+			local metaData = getmetatable(replicator)._PlayerData
 
 			print(player.Name.." is leaving, attempting to save...")
 
 			if metaData.DataApplied == true then
 				print("Adding "..player.Name.." to save queue.")
-				SaveData(player.UserId, false, stream)
+				SaveData(player.UserId, false, replicator)
 			else
 				warn("Did not save data on remove for "..player.Name..".")
 			end
@@ -314,7 +294,7 @@ do -- Initializer
 	-- Bind to close
 	game:BindToClose(function()
 		print("Game is closing, attempting to save...")
-		DataStream:ForceSave()
+		PlayerData:ForceSave()
 		repeat
 			task.wait()
 		until Saving <= 0
@@ -346,18 +326,18 @@ return setmetatable({}, {
 		index = tonumber(index) or index
 
 		if typeof(index) == "Instance" and index:IsA("Player") then
-			return PlayerData[index.UserId]
+			return PlayerReplicators[index.UserId]
 		elseif type(index) == "number" then
-			return PlayerData[index]
-		elseif DataStream[index] then
-			return DataStream[index]
+			return PlayerReplicators[index]
+		elseif PlayerReplicators[index] then
+			return PlayerReplicators[index]
 		else
-			error("DataStream does not have a member named "..index)
+			error("PlayerData does not have a member named "..index)
 		end
 	end,
 	__newindex = function(self, index, value)
-		if PlayerData[index] then
-			PlayerData[index]:Write(value)
+		if PlayerReplicators[index] then
+			PlayerReplicators[index]:Write(value)
 		else
 			error("Cannot write to a nil value "..index)
 		end

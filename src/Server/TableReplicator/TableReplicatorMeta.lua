@@ -8,9 +8,9 @@ local Players = game:GetService("Players")
 local DataMeta = {}
 local SignalCache = {}
 
-local StreamUtils = require(script.Parent:WaitForChild("StreamUtils")) ---@module StreamUtils
+local TableReplicatorUtils = require(script.Parent:WaitForChild("TableReplicatorUtils")) ---@module TableReplicatorUtils
 
-local DataUpdateEvent = StreamUtils.MakeRemote("Event", "DataUpdateEvent")
+local DataUpdateEvent = TableReplicatorUtils.MakeRemote("Event", "DataUpdateEvent")
 
 local function MakeSignal() : Signal
 	local BindableEvent = Instance.new("BindableEvent")
@@ -31,7 +31,7 @@ local function MakeSignal() : Signal
 end
 
 Players.PlayerRemoving:Connect(function(player)
-    local TargetIndex = StreamUtils.ResolvePlayerSchemaIndex(player)
+    local TargetIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
     if TargetIndex and SignalCache[TargetIndex] then
         for _,Signal in pairs(SignalCache[TargetIndex]) do
             Signal:Destroy()
@@ -45,7 +45,7 @@ local function MakeCatcherObject(metaTable)
     local ObjectMetaTable = getmetatable(NewObject)
     ObjectMetaTable.__tostring = function(dataObject)
         local CatcherMeta = getmetatable(dataObject)
-        return "StreamObject ("..CatcherMeta.PathString..")"
+        return "TableReplicatorObject ("..CatcherMeta.PathString..")"
     end
     for Index,Value in pairs(metaTable) do
         ObjectMetaTable[Index] = Value
@@ -61,7 +61,7 @@ function DataMeta:TriggerReplicate(owner, name, ...)
     end
 end
 
-function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner : Player?)
+function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : any}, owner : Player?)
     local function ReplicateData(...)
         self:TriggerReplicate(owner, name, ...)
     end
@@ -94,7 +94,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
 
     --// Local helper functions
     local function TriggerChangedEvents(meta,old,new)
-        local ownerId = StreamUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
+        local ownerId = TableReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
         if SignalCache[ownerId] then
             for FocusedPath, signalData in pairs(SignalCache[ownerId]) do --//TODO: check this with one on client, might be flipped client is correct
                 local StringStart, _ = string.find(meta.PathString, FocusedPath)
@@ -115,7 +115,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
         __index = function(dataObject,NextIndex)
             local CatcherMeta = getmetatable(dataObject)
             if CatcherMeta.LastTable[NextIndex] ~= nil then
-                local NextMetaTable = StreamUtils.CopyTable(CatcherMeta)
+                local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
                 if type(NextMetaTable.LastTable[NextIndex]) == "table" then
                     NextMetaTable.LastTable = NextMetaTable.LastTable[NextIndex]
                 else
@@ -125,7 +125,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
                 NextMetaTable.LastIndex = NextIndex
                 return MakeCatcherObject(NextMetaTable)
             elseif NextIndex == "Read" or NextIndex == "Write" or NextIndex == "Insert" or NextIndex == "Remove" or NextIndex == "Changed" then
-                local NextMetaTable = StreamUtils.CopyTable(CatcherMeta)
+                local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
                 NextMetaTable.LastIndex = NextIndex
                 return MakeCatcherObject(NextMetaTable)
             else
@@ -134,14 +134,14 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
         end,
         __newindex = function(dataObject,NextIndex,Value)
             local CatcherMeta = getmetatable(dataObject)
-            local NextMetaTable = StreamUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
             local OldValue = nil
             if NextMetaTable.FinalIndex then
                 OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                 NextMetaTable.LastTable[NextMetaTable.FinalIndex] = Value
             else
                 NextMetaTable.PathString = NextMetaTable.PathString..(NextMetaTable.PathString ~= "" and "." or "")..NextIndex
-                OldValue = SetValueFromPath(NextMetaTable.PathString, StreamUtils:DeepCopyTable(Value))
+                OldValue = SetValueFromPath(NextMetaTable.PathString, TableReplicatorUtils:DeepCopyTable(Value))
             end
 
             TriggerChangedEvents(NextMetaTable,OldValue,Value)
@@ -204,7 +204,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
                     if CatcherMeta.FinalIndex then
                         return CatcherMeta.LastTable[CatcherMeta.FinalIndex]
                     else
-                        return StreamUtils:DeepCopyTable(CatcherMeta.LastTable)
+                        return TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     end
                 end
             elseif CatcherMeta.LastIndex == "Write" then
@@ -213,7 +213,7 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
                 if CatcherMeta.FinalIndex then
                     error("Attempted to insert a value into a non-table value.")
                 else
-                    local OldTable = StreamUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.insert(CatcherMeta.LastTable,...)
                     TriggerChangedEvents(CatcherMeta,OldTable,CatcherMeta.LastTable)
                     ReplicateData(CatcherMeta.PathString,CatcherMeta.LastTable)
@@ -222,13 +222,13 @@ function DataMeta:MakeStreamObject(name : string, rawData : {[any] : any}, owner
                 if CatcherMeta.FinalIndex then
                     error("Attempted to remove a value from a non-table value.")
                 else
-                    local OldTable = StreamUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.remove(CatcherMeta.LastTable,...)
                     TriggerChangedEvents(CatcherMeta,OldTable,CatcherMeta.LastTable)
                     ReplicateData(CatcherMeta.PathString,CatcherMeta.LastTable)
                 end
             elseif CatcherMeta.LastIndex == "Changed" then
-                local ownerId = StreamUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
+                local ownerId = TableReplicatorUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
                 if not SignalCache[ownerId] then
                     SignalCache[ownerId] = {}
                 end

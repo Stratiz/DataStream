@@ -1,5 +1,5 @@
 --[[
-	DataStreamClient.lua
+	ReplicatedTables.lua
 	Stratiz
 	Created on 09/06/2022 @ 22:58
 	
@@ -9,19 +9,19 @@
 	Documentation:
 		To read the auto-replicated player data, index the module with the name of the table.
 		For example, DataStream by default has .Temp and .Stored tables.
-		To read the Temp table, use DataStreamClient.Temp, same thing with .Stored and any other tables you add.
+		To read the Temp table, use ReplicatedTables.Temp, same thing with .Stored and any other tables you add.
 
 		Any modifications to the data will not be replicated to the server, and will be overwritten by the server's data.
 
 		:GetChangedSignal(Path: string)
 			Returns a signal object that fires when the data at the path changes.
-			For example, if you want to know when the data at DataStreamClient.Temp changes, you would use DataStreamClient:GetChangedSignal("Temp"):Connect(handlerFunction)
+			For example, if you want to know when the data at ReplicatedTables.Temp changes, you would use ReplicatedTables:GetChangedSignal("Temp"):Connect(handlerFunction)
 
 
 --]]
 
 --= Root =--
-local DataStreamClient = { }
+local ReplicatedTables = { }
 
 --= Roblox Services =--
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -29,7 +29,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 --= Dependencies =--
 
 --= Object References =--
-local RemotesFolder = ReplicatedStorage:WaitForChild("_STREAM_REMOTES")
+local RemotesFolder = ReplicatedStorage:WaitForChild("_TABLE_REPLICATION_REMOTES")
 local DataUpdateEvent = RemotesFolder:WaitForChild("DataUpdateEvent")
 local GetData = RemotesFolder:WaitForChild("GetData")
 
@@ -42,11 +42,11 @@ local RawPrint = print
 
 --= Internal Functions =--
 local function warn(...)
-	RawWarn("[StreamClient]", ...)
+	RawWarn("[ReplicatedTables]", ...)
 end
 
 local function print(...)
-	RawPrint("[StreamClient]", ...)
+	RawPrint("[ReplicatedTables]", ...)
 end
 
 local function MakeSignal()
@@ -72,7 +72,7 @@ local function MakeSignal()
 end
 
 --= API Functions =--
-function DataStreamClient:GetChangedSignal(path: string)
+function ReplicatedTables:GetChangedSignal(path: string)
 	if not Binds[path] then
 		local newSignal = MakeSignal()
 		Binds[path] = {
@@ -88,17 +88,17 @@ end
 do
 	--// Fetch stores from server
 	for name, data in pairs(GetData:InvokeServer()) do
-		DataStreamClient[name] = data
+		ReplicatedTables[name] = data
 	end
 	
 	--// Listen for updates
 	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : string, value : any?)
-		if not DataStreamClient[name] then
-			DataStreamClient[name] = {}
+		if not ReplicatedTables[name] then
+			ReplicatedTables[name] = {}
 		end
 		--print("DATA REPLICATED", Path)
 		--print("Data updated: "..(Path or "ALL"))
-		local Current = DataStreamClient[name]
+		local Current = ReplicatedTables[name]
 		local OldValue
 		local PathKeys = path and path:split(".") or {}
 		if #PathKeys == 0 then
@@ -115,14 +115,14 @@ do
 				else
 					warn("Path error | "..path)
 					warn("Data may be out of sync, re-syncing with server...")
-					DataStreamClient[name] = GetData:InvokeServer(name)
+					ReplicatedTables[name] = GetData:InvokeServer(name)
 				end
 			else
 				warn("Invalid path | "..path)
 			end
 		end
 		if #PathKeys == 0 then
-			DataStreamClient[name] = value
+			ReplicatedTables[name] = value
 		end
 		---
 		--print(self.Data)
@@ -138,4 +138,4 @@ do
 end
 
 --= Return Module =--
-return DataStreamClient
+return ReplicatedTables
