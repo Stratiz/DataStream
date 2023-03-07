@@ -124,8 +124,6 @@ do
 		if #PathKeys == 0 then
 			ReplicatedTables[name] = value
 		end
-		---
-		--print(self.Data)
 		-- Changed event
 		local PathForBinds = name.."."..path
 		for BindPath,Bind in pairs(Binds) do

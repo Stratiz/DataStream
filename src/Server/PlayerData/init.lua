@@ -31,6 +31,7 @@ local CONFIG = require(script:WaitForChild("PlayerDataConfig"))
 local DATASTORE = DataStoreService:GetDataStore(CONFIG.DATASTORE_NAME)
 
 --= Variables =--
+local Players = game:GetService("Players")
 local InStudio = game:GetService("RunService"):IsStudio()
 local RawWarn = warn
 local RawPrint = print
@@ -124,10 +125,7 @@ local function GetAndApplyData(player, replicator, _isRetry, _sentQuery)
 			return replicator:Read(), {}
 		end
 	end)
-	if data == "" then
-		print("btw nil data is empty string!!!!!!!") --//TODO: remove me
-		data = nil
-	end
+
 	--- Main stuff
 	if success and data then
 		-- Update Version
@@ -229,10 +227,17 @@ function PlayerData:IsDataLoaded(RawKey) : boolean | nil
 	end
 end
 
-function PlayerData:WaitForLoad(RawKey)
-	while not self:IsDataLoaded(RawKey) do
+function PlayerData:WaitForLoad(RawKey) : boolean
+	local _, userId = DataUtils.ResolveIndex(RawKey)
+	local targetPlayer = Players:GetPlayerByUserId(tonumber(userId))
+	local isLoaded = self:IsDataLoaded(RawKey)
+	
+	while not isLoaded and targetPlayer and targetPlayer.Parent do
 		task.wait()
+		isLoaded = self:IsDataLoaded(RawKey)
 	end
+
+	return isLoaded
 end
 
 do -- Initializer
@@ -243,7 +248,6 @@ do -- Initializer
 	end
 
 	local function addPlayer(player, replicator)
-		print("Adding player to data replicator", player, replicator)
 		local replicatorMetaData = getmetatable(replicator)
 		replicatorMetaData._PlayerData = {
 			DataApplied = false,
@@ -259,7 +263,6 @@ do -- Initializer
 	end
 
 	CONFIG.TABLE_REPLICATOR_MODULE.PlayerReplicatorAdded:Connect(function(name, player)
-		print(PlayerReplicators)
 		if name == CONFIG.SCHEMA_NAME then
 			addPlayer(player, PlayerReplicators[player])
 		end
@@ -303,7 +306,6 @@ do -- Initializer
 	-- Data validation
 	local subscribed, err = pcall(function()
 		local alphaJobId = string.gsub(JOB_ID, "-", "")
-		print("AlphaJobId: "..alphaJobId, JOB_ID)
 
 		MessagingService:SubscribeAsync(alphaJobId, function(data)
 			local fromAlphaJobId = string.gsub(data.FromJobId, "-", "")
@@ -325,11 +327,11 @@ return setmetatable({}, {
 	__index = function(self, index)
 		index = tonumber(index) or index
 
-		if typeof(index) == "Instance" and index:IsA("Player") then
+		if type(index) == "string" then
+			return PlayerData[index]
+		elseif typeof(index) == "Instance" and index:IsA("Player") then
 			return PlayerReplicators[index.UserId]
 		elseif type(index) == "number" then
-			return PlayerReplicators[index]
-		elseif PlayerReplicators[index] then
 			return PlayerReplicators[index]
 		else
 			error("PlayerData does not have a member named "..index)

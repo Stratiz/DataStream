@@ -27,14 +27,23 @@ local function MakeSignal() : Signal
 		return BindableEvent.Event:Wait()
 	end
 
+    function Signal:Destroy()
+        BindableEvent:Destroy()
+    end
+
 	return Signal
 end
 
 Players.PlayerRemoving:Connect(function(player)
     local TargetIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
     if TargetIndex and SignalCache[TargetIndex] then
-        for _,Signal in pairs(SignalCache[TargetIndex]) do
-            Signal:Destroy()
+        for _, pathSignalData in pairs(SignalCache[TargetIndex]) do
+            for _, data in pairs(pathSignalData) do
+                data.Signal:Destroy()
+                for _, connection in pairs(data.Connections) do
+                    connection:Disconnect()
+                end
+            end
         end
         SignalCache[TargetIndex] = nil
     end
@@ -66,15 +75,20 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         self:TriggerReplicate(owner, name, ...)
     end
 
-    local function SetValueFromPath(UserId, Path, Value)
+    local function SetValueFromPath(Path, Value)
         if Path == "" or Path == nil then
-            local OldValue = rawData
-            rawData = Value
+            local OldValue = TableReplicatorUtils:DeepCopyTable(rawData)
+
+            table.clear(rawData)
+            for key, newValue in Value do
+                rawData[key] = newValue
+            end 
+
             return OldValue
         else
             local PathTable = string.split(Path,".")
             local LastStep = rawData
-            for Index,PathFragment in ipairs(PathTable or {}) do
+            for Index, PathFragment in ipairs(PathTable or {}) do
                 PathFragment = tonumber(PathFragment) or PathFragment
                 if LastStep then
                     if Index == #PathTable then
@@ -85,7 +99,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                         LastStep = LastStep[PathFragment]
                     end
                 else
-                    warn("Last step is nil",Path,PathFragment)
+                    warn("Last step is nil", Path, PathFragment)
                     return Value
                 end
             end
@@ -95,11 +109,12 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
     --// Local helper functions
     local function TriggerChangedEvents(meta,old,new)
         local ownerId = TableReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
-        if SignalCache[ownerId] then
-            for FocusedPath, signalData in pairs(SignalCache[ownerId]) do --//TODO: check this with one on client, might be flipped client is correct
-                local StringStart, _ = string.find(meta.PathString, FocusedPath)
-                if StringStart == 1 or meta.PathString == FocusedPath then
-                    signalData.Signal:Fire(new, old, meta.PathString)
+
+        if SignalCache[ownerId] and SignalCache[ownerId][name] then
+            for path, data in pairs(SignalCache[ownerId][name]) do
+                local StringStart, _ = string.find(meta.PathString, path)
+                if StringStart == 1 or meta.PathString == path then
+                    data.Signal:Fire(new, old, meta.PathString)
                 end
             end
         end
@@ -111,6 +126,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         LastTable = rawData,
         LastIndex = nil,
         FinalIndex = nil,
+        Owner = owner,
         --// Meta table made to catch and replicate changes
         __index = function(dataObject,NextIndex)
             local CatcherMeta = getmetatable(dataObject)
@@ -208,7 +224,20 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     end
                 end
             elseif CatcherMeta.LastIndex == "Write" then
-                -- TODO: Write for when the object is a varible and new index wont get triggered
+                local value = table.pack(...)[1]
+
+                local NextMetaTable = CatcherMeta
+                local OldValue = nil
+                if NextMetaTable.FinalIndex then
+                    OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
+                    NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
+                else
+                    OldValue = SetValueFromPath(NextMetaTable.PathString, TableReplicatorUtils:DeepCopyTable(value))
+                end
+
+                TriggerChangedEvents(NextMetaTable, OldValue, value)
+
+                ReplicateData(NextMetaTable.PathString, value)
             elseif CatcherMeta.LastIndex == "Insert" then
                 if CatcherMeta.FinalIndex then
                     error("Attempted to insert a value into a non-table value.")
