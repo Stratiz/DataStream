@@ -71,8 +71,9 @@ function DataMeta:TriggerReplicate(owner, name, ...)
 end
 
 function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : any}, owner : Player?)
-    local function ReplicateData(...)
-        self:TriggerReplicate(owner, name, ...)
+    local function ReplicateData(pathString, ...)
+        --TODO: Finish converting to table based system instead of strings
+        self:TriggerReplicate(owner, name, string.split(pathString, "."), ...)
     end
 
     local function SetValueFromPath(Path, Value)

@@ -27,6 +27,8 @@ local ReplicatedTables = { }
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 --= Dependencies =--
+local ReplicatedTablesUtils = require(script:WaitForChild("ReplicatedTablesUtils"))
+local ClientMeta = require(script:WaitForChild("ClientReplicatedTablesMeta"))
 
 --= Object References =--
 local RemotesFolder = ReplicatedStorage:WaitForChild("_TABLE_REPLICATION_REMOTES")
@@ -36,9 +38,9 @@ local GetData = RemotesFolder:WaitForChild("GetData")
 --= Constants =--
 
 --= Variables =--
-local Binds = {}
 local RawWarn = warn
 local RawPrint = print
+local RealData = {}
 
 --= Internal Functions =--
 local function warn(...)
@@ -49,91 +51,61 @@ local function print(...)
 	RawPrint("[ReplicatedTables]", ...)
 end
 
-local function MakeSignal()
-	local bindableEvent = Instance.new("BindableEvent")
-	local newSignal = {}
-	function newSignal:Connect(toExecute : (any) -> ()) : RBXScriptConnection
-		return bindableEvent.Event:Connect(toExecute)
+local function UpdateRoot(rootName : string, data : any)
+	table.clear(RealData[rootName])
+	for i, v in data do
+		RealData[rootName][i] = v
 	end
-
-	function newSignal:Once(toExecute : (any) -> ()) : RBXScriptConnection
-		return bindableEvent.Event:Once(toExecute)
-	end
-
-	function newSignal:Fire(... : any)
-		bindableEvent:Fire(...)
-	end
-
-	function newSignal:Wait() : any
-		return bindableEvent.Event:Wait()
-	end
-
-	return newSignal
 end
 
 --= API Functions =--
-function ReplicatedTables:GetChangedSignal(path: string)
-	if not Binds[path] then
-		local newSignal = MakeSignal()
-		Binds[path] = {
-			Signal = newSignal
-		}
-		return newSignal
-	else
-		return Binds[path].Signal
-	end
-end
 
 --= Initializers =--
 do
 	--// Fetch stores from server
 	for name, data in pairs(GetData:InvokeServer()) do
-		ReplicatedTables[name] = data
+		RealData[name] = data
 	end
 	
 	--// Listen for updates
-	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : string, value : any?)
-		if not ReplicatedTables[name] then
-			ReplicatedTables[name] = {}
+	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : {string}, value : any?)
+		if not RealData[name] then
+			RealData[name] = {}
 		end
 		--print("DATA REPLICATED", Path)
 		--print("Data updated: "..(Path or "ALL"))
-		local Current = ReplicatedTables[name]
-		local OldValue
-		local PathKeys = path and path:split(".") or {}
-		if #PathKeys == 0 then
-			Current = value
-		end
+		local Current = RealData[name]
+		local PathKeys = path or {}
 		for Index,NextKey in pairs(PathKeys) do
 			if type(Current) == "table" then
 				NextKey = tonumber(NextKey) or NextKey
 				if Index >= #PathKeys then
-					OldValue = Current[NextKey]
 					Current[NextKey] = value
 				elseif Current[NextKey] then
 					Current = Current[NextKey]
 				else
 					warn("Path error | "..path)
 					warn("Data may be out of sync, re-syncing with server...")
-					ReplicatedTables[name] = GetData:InvokeServer(name)
+					UpdateRoot(name, GetData:InvokeServer(name))
 				end
 			else
 				warn("Invalid path | "..path)
 			end
 		end
 		if #PathKeys == 0 then
-			ReplicatedTables[name] = value
+			UpdateRoot(name, value)
 		end
-		-- Changed event
-		local PathForBinds = name.."."..path
-		for BindPath,Bind in pairs(Binds) do
-			local StringStart, _ = string.find(PathForBinds or "",BindPath)
-			if BindPath == PathForBinds or StringStart == 1 then
-				Bind.ToFire:Fire(value, OldValue, PathForBinds)
-			end
-		end
+		ClientMeta:PathChanged(name, path, value)
 	end)
 end
 
 --= Return Module =--
-return ReplicatedTables
+return setmetatable(ReplicatedTables, {
+	__index = function(self, index)
+		if RealData[index] then
+			return ClientMeta:MakeTableReplicatorObject(index, RealData[index])
+		else
+			return nil
+		end
+	end,
+})

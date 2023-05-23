@@ -183,10 +183,11 @@ local function GetAndApplyData(player, replicator, _isRetry, _sentQuery)
 		end
 	elseif not success then
 		warn("Datastore failed: "..data)
+		task.wait(2)
 		print("Retrying data get...")
 
 		if PlayerReplicators[player] then -- Making sure the data is still needed
-			GetAndApplyData(player, replicator)
+			GetAndApplyData(player, replicator, 0) -- Retry to 0 because DATA IS IMPORTANT
 		else
 			print("Player left while data was still loading.")
 		end
@@ -222,7 +223,7 @@ function PlayerData:IsDataLoaded(RawKey) : boolean | nil
 	if targetreplicator then
 		local metaData = getmetatable(targetreplicator)._PlayerData
 		if metaData then
-			return not metaData.DataApplied
+			return metaData.DataApplied == true and metaData.Loading == false
 		end
 	end
 end
