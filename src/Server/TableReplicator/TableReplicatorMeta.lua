@@ -1,66 +1,75 @@
-export type Signal = {
-	Connect: (self : any, toExecute : (any) -> ()) -> RBXScriptConnection,
-	Fire: (any),
-	Wait: (self : any) -> any,
+--[[
+    TableReplicatorMeta.lua
+    Stratiz
+    Created on 06/28/2023 @ 02:29
+    
+    Description:
+        No description provided.
+    
+--]]
+
+--= Root =--
+local DataMeta = { }
+
+--= Roblox Services =--
+local Players = game:GetService("Players")
+
+--= Dependencies =--
+
+local CONFIG = require(script.Parent.ReplicatorServerConfig)
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
+local ReplicatorUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorUtils"))
+local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
+
+--= Object References =--
+
+local DataUpdateEvent = ReplicatorRemotes:Get("Event", "DataUpdateEvent")
+
+--= Constants =--
+
+local METHODS = {
+    ChildAdded = true,
+    ChildRemoved = true,
+    Read = true,
+    Changed = true
 }
 
-local Players = game:GetService("Players")
-local DataMeta = {}
+--= Variables =--
+
 local SignalCache = {}
 
-local TableReplicatorUtils = require(script.Parent:WaitForChild("TableReplicatorUtils")) ---@module TableReplicatorUtils
-
-local DataUpdateEvent = TableReplicatorUtils.MakeRemote("Event", "DataUpdateEvent")
-
-local function MakeSignal() : Signal
-	local BindableEvent = Instance.new("BindableEvent")
-	local Signal = {}
-	function Signal:Connect(toExecute : (any) -> ()) : RBXScriptConnection
-		return BindableEvent.Event:Connect(toExecute)
-	end
-
-	function Signal:Fire(... : any)
-		BindableEvent:Fire(...)
-	end
-
-	function Signal:Wait() : any
-		return BindableEvent.Event:Wait()
-	end
-
-    function Signal:Destroy()
-        BindableEvent:Destroy()
-    end
-
-	return Signal
-end
-
-Players.PlayerRemoving:Connect(function(player)
-    local TargetIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
-    if TargetIndex and SignalCache[TargetIndex] then
-        for _, pathSignalData in pairs(SignalCache[TargetIndex]) do
-            for _, data in pairs(pathSignalData) do
-                data.Signal:Destroy()
-                for _, connection in pairs(data.Connections) do
-                    connection:Disconnect()
-                end
-            end
-        end
-        SignalCache[TargetIndex] = nil
-    end
-end)
+--= Internal Functions =--
 
 local function MakeCatcherObject(metaTable)
     local NewObject = newproxy(true)
     local ObjectMetaTable = getmetatable(NewObject)
     ObjectMetaTable.__tostring = function(dataObject)
         local CatcherMeta = getmetatable(dataObject)
-        return "TableReplicatorObject ("..CatcherMeta.PathString..")"
+
+        if CatcherMeta.MethodLocked == true then
+            return "TableReplicatorObjectMethod (".. table.concat(CatcherMeta.PathTable, ".")..")"
+        else
+            return "TableReplicatorObject (".. table.concat(CatcherMeta.PathTable, ".")..")"
+        end
     end
     for Index,Value in pairs(metaTable) do
         ObjectMetaTable[Index] = Value
     end
     return NewObject
 end
+
+local function GetValueFromPathTable(rootTable, pathTable) : any?
+    local currentTarget = rootTable
+    for _, index in pathTable do
+        currentTarget = currentTarget[index]
+        if type(currentTarget) ~= "table" then
+            break
+        end
+    end
+    return currentTarget
+end
+
+--= API Functions =--
 
 function DataMeta:TriggerReplicate(owner, name, ...) 
     if owner then
@@ -78,7 +87,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
 
     local function SetValueFromPath(Path, Value)
         if Path == "" or Path == nil then
-            local OldValue = TableReplicatorUtils:DeepCopyTable(rawData)
+            local OldValue = ReplicatorUtils:DeepCopyTable(rawData)
 
             table.clear(rawData)
             for key, newValue in Value do
@@ -109,7 +118,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
 
     --// Local helper functions
     local function TriggerChangedEvents(meta,old,new)
-        local ownerId = TableReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
+        local ownerId = ReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
 
         if SignalCache[ownerId] and SignalCache[ownerId][name] then
             for path, data in pairs(SignalCache[ownerId][name]) do
@@ -126,39 +135,48 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         PathString = "",
         LastTable = rawData,
         LastIndex = nil,
-        FinalIndex = nil,
+        MethodLocked = false,
         Owner = owner,
         --// Meta table made to catch and replicate changes
         __index = function(dataObject,NextIndex)
             local CatcherMeta = getmetatable(dataObject)
-            if CatcherMeta.LastTable[NextIndex] ~= nil then
-                local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
-                if type(NextMetaTable.LastTable[NextIndex]) == "table" then
-                    NextMetaTable.LastTable = NextMetaTable.LastTable[NextIndex]
-                else
-                    NextMetaTable.FinalIndex = NextIndex
-                end
-                NextMetaTable.PathString = NextMetaTable.PathString..(NextMetaTable.PathString ~= "" and "." or "")..NextIndex
-                NextMetaTable.LastIndex = NextIndex
-                return MakeCatcherObject(NextMetaTable)
-            elseif NextIndex == "Read" or NextIndex == "Write" or NextIndex == "Insert" or NextIndex == "Remove" or NextIndex == "Changed" then
-                local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
-                NextMetaTable.LastIndex = NextIndex
-                return MakeCatcherObject(NextMetaTable)
-            else
-                --warn("Invalid index")
+
+            if CatcherMeta.MethodLocked then
+                error("Attempted to index a method.", 2)
             end
+
+            local previousValue = GetValueFromPathTable(rawData, CatcherMeta.PathTable)
+            local isPreviousTable = type(previousValue) == "table"
+
+            if not METHODS[NextIndex] then
+                if previousValue == nil then
+                    error("Attempted to index a nil value.", 2)
+                elseif not isPreviousTable then
+                    error("Attempted to index a non-table value.", 2)
+                end
+            end
+
+            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
+            NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
+
+            table.insert(NextMetaTable.PathTable, NextIndex)
+
+            if (previousValue == nil or not isPreviousTable) and METHODS[NextIndex] then
+                NextMetaTable.MethodLocked = true
+            end
+            NextMetaTable.LastIndex = NextIndex
+            return MakeCatcherObject(NextMetaTable)
         end,
         __newindex = function(dataObject,NextIndex,Value)
             local CatcherMeta = getmetatable(dataObject)
-            local NextMetaTable = TableReplicatorUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
             local OldValue = nil
             if NextMetaTable.FinalIndex then
                 OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                 NextMetaTable.LastTable[NextMetaTable.FinalIndex] = Value
             else
                 NextMetaTable.PathString = NextMetaTable.PathString..(NextMetaTable.PathString ~= "" and "." or "")..NextIndex
-                OldValue = SetValueFromPath(NextMetaTable.PathString, TableReplicatorUtils:DeepCopyTable(Value))
+                OldValue = SetValueFromPath(NextMetaTable.PathString, ReplicatorUtils:DeepCopyTable(Value))
             end
 
             TriggerChangedEvents(NextMetaTable,OldValue,Value)
@@ -221,7 +239,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     if CatcherMeta.FinalIndex then
                         return CatcherMeta.LastTable[CatcherMeta.FinalIndex]
                     else
-                        return TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
+                        return ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     end
                 end
             elseif CatcherMeta.LastIndex == "Write" then
@@ -233,7 +251,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                     NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
                 else
-                    OldValue = SetValueFromPath(NextMetaTable.PathString, TableReplicatorUtils:DeepCopyTable(value))
+                    OldValue = SetValueFromPath(NextMetaTable.PathString, ReplicatorUtils:DeepCopyTable(value))
                 end
 
                 TriggerChangedEvents(NextMetaTable, OldValue, value)
@@ -243,7 +261,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 if CatcherMeta.FinalIndex then
                     error("Attempted to insert a value into a non-table value.")
                 else
-                    local OldTable = TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.insert(CatcherMeta.LastTable,...)
                     TriggerChangedEvents(CatcherMeta,OldTable,CatcherMeta.LastTable)
                     ReplicateData(CatcherMeta.PathString,CatcherMeta.LastTable)
@@ -252,13 +270,13 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 if CatcherMeta.FinalIndex then
                     error("Attempted to remove a value from a non-table value.")
                 else
-                    local OldTable = TableReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.remove(CatcherMeta.LastTable,...)
                     TriggerChangedEvents(CatcherMeta,OldTable,CatcherMeta.LastTable)
                     ReplicateData(CatcherMeta.PathString,CatcherMeta.LastTable)
                 end
             elseif CatcherMeta.LastIndex == "Changed" then
-                local ownerId = TableReplicatorUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
+                local ownerId = ReplicatorUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
                 if not SignalCache[ownerId] then
                     SignalCache[ownerId] = {}
                 end
@@ -268,7 +286,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
 
                 local CurrentSignal = SignalCache[ownerId][name][CatcherMeta.PathString]
                 if not CurrentSignal then
-                    CurrentSignal = {Signal = MakeSignal(), Connections = {}}
+                    CurrentSignal = {Signal = Signal.new(), Connections = {}}
                     SignalCache[ownerId][name][CatcherMeta.PathString] = CurrentSignal
                 end
                 local newConnection = CurrentSignal.Signal:Connect(...)
@@ -281,5 +299,26 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
     }
     return MakeCatcherObject(RootCatcherMeta)
 end
+
+--= Initializers =--
+
+do
+    Players.PlayerRemoving:Connect(function(player)
+        local TargetIndex = tostring(player.UserId)
+        if TargetIndex and SignalCache[TargetIndex] then
+            for _, pathSignalData in pairs(SignalCache[TargetIndex]) do
+                for _, data in pairs(pathSignalData) do
+                    data.Signal:Destroy()
+                    for _, connection in pairs(data.Connections) do
+                        connection:Disconnect()
+                    end
+                end
+            end
+            SignalCache[TargetIndex] = nil
+        end
+    end)
+end
+
+--= Return Module =--
 
 return DataMeta

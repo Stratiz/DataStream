@@ -1,11 +1,27 @@
-export type Signal = {
-	Connect: (self : any, toExecute : (any) -> ()) -> RBXScriptConnection,
-	Fire: (any),
-	Wait: (self : any) -> any,
-}
+--[[
+    ClientReplicatedTablesMeta.lua
+    Stratiz
+    Created on 06/28/2023 @ 01:52
+    
+    Description:
+        No description provided.
+    
+--]]
 
-local DataMeta = {}
-local SignalCache = {}
+--= Root =--
+local ClientReplicatedTablesMeta = { }
+
+--= Roblox Services =--
+
+--= Dependencies =--
+
+local CONFIG = require(script.Parent.ReplicatorClientConfig)
+local ReplicatorUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorUtils"))
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
+
+--= Object References =--
+
+--= Constants =--
 
 local METHODS = {
     ChildAdded = true,
@@ -14,7 +30,12 @@ local METHODS = {
     Changed = true
 }
 
-local ReplicatedTablesUtils = require(script.Parent.ReplicatedTablesUtils)
+--= Variables =--
+
+local DataMeta = {}
+local SignalCache = {}
+
+--= Internal Functions =--
 
 local function MakeCatcherObject(metaTable)
     local NewObject = newproxy(true)
@@ -62,7 +83,7 @@ local function BindChanged(name, pathTable, callback)
 
     if not currentSignalData then
         currentSignalData = {
-            Signal = ReplicatedTablesUtils.MakeSignal(),
+            Signal = Signal.new(),
             ConnectionCount = 0
         }
         setmetatable(currentCache, currentSignalData)
@@ -83,6 +104,8 @@ local function BindChanged(name, pathTable, callback)
     currentSignalData.ConnectionCount += 1
     return rbxSignalProxy :: RBXScriptConnection
 end
+
+--= API Functions =--
 
 function DataMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any)
     local targetCache = SignalCache[name]
@@ -142,7 +165,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
                 end
             end
 
-            local NextMetaTable = ReplicatedTablesUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
 
             table.insert(NextMetaTable.PathTable, NextIndex)
@@ -170,7 +193,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
                     warn("You should be calling Read() with : instead of .")
                 end
 
-                return ReplicatedTablesUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
+                return ReplicatorUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
@@ -192,5 +215,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
     }
     return MakeCatcherObject(RootCatcherMeta)
 end
+
+--= Return Module =--
 
 return DataMeta

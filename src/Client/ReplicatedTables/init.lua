@@ -13,27 +13,21 @@
 
 		Any modifications to the data will not be replicated to the server, and will be overwritten by the server's data.
 
-		:GetChangedSignal(Path: string)
-			Returns a signal object that fires when the data at the path changes.
-			For example, if you want to know when the data at ReplicatedTables.Temp changes, you would use ReplicatedTables:GetChangedSignal("Temp"):Connect(handlerFunction)
-
-
 --]]
 
 --= Root =--
 local ReplicatedTables = { }
 
---= Roblox Services =--
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 --= Dependencies =--
-local ReplicatedTablesUtils = require(script:WaitForChild("ReplicatedTablesUtils"))
+
 local ClientMeta = require(script:WaitForChild("ClientReplicatedTablesMeta"))
+local CONFIG = require(script.Parent.ReplicatorClientConfig)
+local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
 
 --= Object References =--
-local RemotesFolder = ReplicatedStorage:WaitForChild("_TABLE_REPLICATION_REMOTES")
-local DataUpdateEvent = RemotesFolder:WaitForChild("DataUpdateEvent")
-local GetData = RemotesFolder:WaitForChild("GetData")
+
+local GetDataFunction = ReplicatorRemotes:Get("Function", "GetData")
+local DataUpdateEvent = ReplicatorRemotes:Get("Event", "DataUpdate")
 
 --= Constants =--
 
@@ -43,12 +37,9 @@ local RawPrint = print
 local RealData = {}
 
 --= Internal Functions =--
+
 local function warn(...)
 	RawWarn("[ReplicatedTables]", ...)
-end
-
-local function print(...)
-	RawPrint("[ReplicatedTables]", ...)
 end
 
 local function UpdateRoot(rootName : string, data : any)
@@ -58,12 +49,10 @@ local function UpdateRoot(rootName : string, data : any)
 	end
 end
 
---= API Functions =--
-
 --= Initializers =--
 do
 	--// Fetch stores from server
-	for name, data in pairs(GetData:InvokeServer()) do
+	for name, data in pairs(GetDataFunction:InvokeServer()) do
 		RealData[name] = data
 	end
 	
@@ -86,7 +75,7 @@ do
 				else
 					warn("Path error | "..path)
 					warn("Data may be out of sync, re-syncing with server...")
-					UpdateRoot(name, GetData:InvokeServer(name))
+					UpdateRoot(name, GetDataFunction:InvokeServer(name))
 				end
 			else
 				warn("Invalid path | "..path)
