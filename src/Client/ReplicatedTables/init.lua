@@ -8,7 +8,7 @@
 	
 	Documentation:
 		To read the auto-replicated player data, index the module with the name of the table.
-		For example, DataStream by default has .Temp and .Stored tables.
+		For example, DataStream by default has .Temp and .Stored schemas.
 		To read the Temp table, use ReplicatedTables.Temp, same thing with .Stored and any other tables you add.
 
 		Any modifications to the data will not be replicated to the server, and will be overwritten by the server's data.
@@ -21,7 +21,7 @@ local ReplicatedTables = { }
 --= Dependencies =--
 
 local ClientMeta = require(script:WaitForChild("ClientReplicatedTablesMeta"))
-local CONFIG = require(script.Parent.ReplicatorClientConfig)
+local CONFIG = require(script.ReplicatorClientConfig)
 local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
 
 --= Object References =--

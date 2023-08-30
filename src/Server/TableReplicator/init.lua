@@ -4,55 +4,49 @@
     Created on 11/30/2022 @ 03:13
     
     Description:
-        No description provided.
+        Allows for easy real-time replication of tables to the client.
     
-    Documentation:
-        No documentation provided.
+    Usage:
+
+        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path = 100
+        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path:Read() -- Returns 100
+        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path:Changed(function(newValue, oldValue)
+            print(newValue)
+        end)
+
 --]]
 
 --= Root =--
+
 local TableReplicator = { }
 
 --= Roblox Services =--
+
 local Players = game:GetService("Players")
 
 --= Dependencies =--
+
+local CONFIG = require(script.ReplicatorServerConfig)
 local TableReplicatorMeta = require(script:WaitForChild("TableReplicatorMeta"))
-local TableReplicatorUtils = require(script:WaitForChild("TableReplicatorUtils"))
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
+local ReplicatorUtils = require(script.TableReplicatorUtils)
+local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
 
 --= Object References =--
 
 --= Constants =--
 
 --= Variables =--
-local GetData = TableReplicatorUtils.MakeRemote("Function", "GetData")
+
+local GetData =  ReplicatorRemotes:Get("Function", "GetData")
 local Replicating = {
     Player = {},
     Global = {}
 }
+local RegisteredPlayers = {}
+local SchemaCache = {}
 
 --= Internal Functions =--
-local function MakeSignal()
-	local bindableEvent = Instance.new("BindableEvent")
-	local newSignal = {}
-	function newSignal:Connect(toExecute : (any) -> ()) : RBXScriptConnection
-		return bindableEvent.Event:Connect(toExecute)
-	end
-
-	function newSignal:Once(toExecute : (any) -> ()) : RBXScriptConnection
-		return bindableEvent.Event:Once(toExecute)
-	end
-
-	function newSignal:Fire(... : any)
-		bindableEvent:Fire(...)
-	end
-
-	function newSignal:Wait() : any
-		return bindableEvent.Event:Wait()
-	end
-
-	return newSignal
-end
 
 local function ValidateReplicatorName(name : string)
     if Replicating.Global[name] or Replicating.Player[name] then
@@ -68,9 +62,21 @@ local function CreatePlayerReplicatorCatcher(name)
     local proxy = newproxy(true)
     local metatable = getmetatable(proxy)
     
-    metatable.__newindex = function(self,Index,Value)
-        local targetIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+    local function checkForRegister(index)
+        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(index)
         local targetPlayer = Players:GetPlayerByUserId(targetIndex)
+
+        if targetPlayer then
+            if not RegisteredPlayers[targetPlayer] or RegisteredPlayers[targetPlayer][name] == nil then
+                TableReplicator:MakeReplicatorForPlayer(name, targetPlayer, ReplicatorUtils:DeepCopyTable(SchemaCache[name]))
+            end
+        end
+    end
+
+    metatable.__newindex = function(self,Index,Value)
+        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+        local targetPlayer = Players:GetPlayerByUserId(targetIndex)
+        checkForRegister(Index)
 
         if targetPlayer then
             playerTableReplicatorCache[targetIndex] = Value
@@ -84,7 +90,10 @@ local function CreatePlayerReplicatorCatcher(name)
     end
     
     metatable.__index = function(self, Index)
-        local targetIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+        checkForRegister(Index)
+
+
         return playerTableReplicatorCache[targetIndex]
     end
 
@@ -98,48 +107,65 @@ local function CreatePlayerReplicatorCatcher(name)
 end
 
 --= API Functions =--
-TableReplicator.PlayerReplicatorAdded = MakeSignal()
-TableReplicator.PlayerReplicatorRemoving = MakeSignal()
+TableReplicator.PlayerReplicatorAdded = Signal.new()
+TableReplicator.PlayerReplicatorRemoving = Signal.new()
 
+-- Adds a new schema to be a default replicator which is unique to each player
 function TableReplicator:AddPlayerReplicatorTemplate(name : string, schema : {[any] : any})
     ValidateReplicatorName(name)
 
     Replicating.Player[name] = CreatePlayerReplicatorCatcher(name)
 
     Players.PlayerAdded:Connect(function(player)
-        self:MakeReplicatorForPlayer(name, player, TableReplicatorUtils:DeepCopyTable(schema))
+        self:MakeReplicatorForPlayer(name, player, ReplicatorUtils:DeepCopyTable(schema))
     end)
 
     Players.PlayerRemoving:Connect(function(player)
+        RegisteredPlayers[player] = nil
         self:RemoveReplicatorForPlayer(name, player)
     end)
 end
 
+-- Adds a schema to a specific player
 function TableReplicator:MakeReplicatorForPlayer(name : string, player : Player, schema : {[any] : any})
-
+    
     if not Replicating.Player[name] then
         ValidateReplicatorName(name)
         Replicating.Player[name] = CreatePlayerReplicatorCatcher(name)
     end
 
-    local playerIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
+    if not RegisteredPlayers[player] then
+        RegisteredPlayers[player] = {}
+    end
+    RegisteredPlayers[player][name] = true
+
+    SchemaCache[name] = schema
+
+    local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
     local newTableReplicator = TableReplicatorMeta:MakeTableReplicatorObject(name, schema, player)
     Replicating.Player[name][playerIndex] = newTableReplicator
 
     TableReplicator.PlayerReplicatorAdded:Fire(name, player)
+
     return newTableReplicator
 end
 
+-- Removes a schema from a specific player
 function TableReplicator:RemoveReplicatorForPlayer(name : string, player : Player)
-    local playerIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
+    local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
 
     TableReplicator.PlayerReplicatorRemoving:Fire(name, player)
+
+    if RegisteredPlayers[player] then
+        RegisteredPlayers[player][name] = nil
+    end
 
     task.defer(function()
         Replicating.Player[name][playerIndex] = nil
     end)
 end
 
+-- Adds a schema whose data all players share.
 function TableReplicator:MakeGlobalReplicator(name : string, schema : {[any] : any})
     ValidateReplicatorName(name)
 
@@ -162,7 +188,7 @@ do
     GetData.OnServerInvoke = function(player, schemaName)
         if not schemaName then
             local toReturn = {}
-            local playerIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
+            local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
 
             for name, schema in pairs(Replicating.Player) do
                 if schema[playerIndex] then
@@ -177,7 +203,7 @@ do
             return toReturn
         else
             if Replicating.Player[schemaName] then
-                local playerIndex = TableReplicatorUtils.ResolvePlayerSchemaIndex(player)
+                local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
                 if Replicating.Player[schemaName][playerIndex] then
                     return Replicating.Player[schemaName][playerIndex]:Read()
                 else

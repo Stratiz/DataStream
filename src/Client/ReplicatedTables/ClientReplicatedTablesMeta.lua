@@ -4,7 +4,7 @@
     Created on 06/28/2023 @ 01:52
     
     Description:
-        No description provided.
+        Provides functionality for the data proxy on the client for consistency.
     
 --]]
 
