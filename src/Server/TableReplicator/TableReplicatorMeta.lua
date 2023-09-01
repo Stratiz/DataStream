@@ -113,17 +113,18 @@ local function GetValueFromPathTable(rootTable, pathTable) : any?
     return currentTarget
 end
 
-function TriggerPathChanged(name : string, ownerId : number, path : {string}, value : any, oldValue : any)
+function TriggerPathChanged(name : string, ownerId : number, path : {string}, value : any, oldValue : any, rawData)
     local targetCache = SignalCache[name] and SignalCache[name][ownerId]
 
     if targetCache then
         local currentParent = targetCache
 
+        local currentPath = {}
         for _, index in path do
             local signalData = getmetatable(currentParent)
 
             if signalData then
-                signalData.Signal:Fire("Changed", value, oldValue)
+                signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath))
             end
 
             local nextParent = currentParent[index]
@@ -131,15 +132,17 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
                 local nextSignalData = getmetatable(nextParent)
                 if nextSignalData then
                     if value == nil then
-                        nextSignalData.Signal:Fire("ChildRemoved", index)
+                        nextSignalData.Signal:Fire("ChildRemoved", path[#path])
                     elseif oldValue == nil then
-                        nextSignalData.Signal:Fire("ChildAdded", index)
+                        nextSignalData.Signal:Fire("ChildAdded", path[#path])
                     end
                 end
                 currentParent = nextParent
             else
                 break
             end
+
+            table.insert(currentPath, index)
         end
     end
 end
@@ -193,10 +196,15 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
     end
 
     --// Local helper functions
-    local function internalChangedTrigger(meta,old,new)
+    local function internalChangedTrigger(meta,old,new, fromMethod : boolean)
         local ownerId = ServerReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
 
-        TriggerPathChanged(name, ownerId, meta.PathTable, new, old)
+        local pathTable = table.clone(meta.PathTable)
+        if fromMethod then
+            table.remove(pathTable, #pathTable)
+        end
+
+        TriggerPathChanged(name, ownerId, pathTable, new, old, rawData)
 
         --[[if SignalCache[ownerId] and SignalCache[ownerId][name] then
             local pathString = table.concat(meta.PathTable, ".")
@@ -252,9 +260,13 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
             end
 
             NextMetaTable.LastIndex = NextIndex
+            if not NextMetaTable.MethodLocked then
+                NextMetaTable.LastTable = previousValue
+            end
+
             return MakeCatcherObject(NextMetaTable)
         end,
-        __newindex = function(dataObject,NextIndex,Value) -- FIXME
+        __newindex = function(dataObject,NextIndex,Value)
             local CatcherMeta = getmetatable(dataObject)
             local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
             local OldValue = nil
@@ -266,7 +278,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 OldValue = SetValueFromPath(NextMetaTable.PathTable, ReplicatorUtils:DeepCopyTable(Value))
             end
 
-            internalChangedTrigger(NextMetaTable,OldValue,Value)
+            internalChangedTrigger(NextMetaTable,OldValue,Value, false)
 
             ReplicateData(NextMetaTable.PathTable, Value)
             return MakeCatcherObject(NextMetaTable)
@@ -311,28 +323,11 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
             table.remove(truePathTable, #truePathTable)
 
             if CatcherMeta.LastIndex == "Read" then
-                local IsRaw = (...)
                 if not self then
                     warn("You should be calling Read() with : instead of .")
                 end
-                if IsRaw then
-                    if CatcherMeta.FinalIndex then
-                        return dataObject
-                    else
-                        local RawTable = {} -- Maybe make a raw flag?
-                        for Index, _ in CatcherMeta.LastTable do
-                            RawTable[Index] = dataObject[Index]
-                        end
-                        return RawTable
-                    end
-                else
 
-                    if CatcherMeta.FinalIndex then
-                        return CatcherMeta.LastTable[CatcherMeta.FinalIndex]
-                    else
-                        return ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
-                    end
-                end
+                return ReplicatorUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
             elseif CatcherMeta.LastIndex == "Write" then
                 local value = table.pack(...)[1]
 
@@ -342,20 +337,20 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                     NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
                 else
-                    OldValue = SetValueFromPath(NextMetaTable.PathTable , ReplicatorUtils:DeepCopyTable(value))
+                    OldValue = SetValueFromPath(NextMetaTable.PathTable, ReplicatorUtils:DeepCopyTable(value))
                 end
 
-                internalChangedTrigger(NextMetaTable, OldValue, value)
+                internalChangedTrigger(NextMetaTable, OldValue, value, true)
 
-                ReplicateData(NextMetaTable.PathTable, value)
+                ReplicateData(truePathTable, value)
             elseif CatcherMeta.LastIndex == "Insert" then
                 if CatcherMeta.FinalIndex then
                     error("Attempted to insert a value into a non-table value.")
                 else
                     local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.insert(CatcherMeta.LastTable,...)
-                    internalChangedTrigger(CatcherMeta,OldTable,CatcherMeta.LastTable)
-                    ReplicateData(CatcherMeta.PathTable, CatcherMeta.LastTable)
+                    internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
+                    ReplicateData(truePathTable, CatcherMeta.LastTable)
                 end
             elseif CatcherMeta.LastIndex == "Remove" then
                 if CatcherMeta.FinalIndex then
@@ -363,14 +358,16 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 else
                     local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.remove(CatcherMeta.LastTable,...)
-                    internalChangedTrigger(CatcherMeta,OldTable,CatcherMeta.LastTable)
-                    ReplicateData(CatcherMeta.PathTable, CatcherMeta.LastTable)
+                    internalChangedTrigger(CatcherMeta,OldTable,CatcherMeta.LastTable, true)
+                    ReplicateData(truePathTable, CatcherMeta.LastTable)
                 end
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
-                return BindChanged(name, ownerId, truePathTable, function(_, newValue, oldValue)
-                    callback(newValue, oldValue)
+                return BindChanged(name, ownerId, truePathTable, function(method, newValue, oldValue)
+                    if method == CatcherMeta.LastIndex then
+                        callback(newValue, oldValue)
+                    end
                 end)
             elseif CatcherMeta.LastIndex == "ChildAdded" or CatcherMeta.LastIndex == "ChildRemoved" then
                 local callback = table.pack(...)[1]

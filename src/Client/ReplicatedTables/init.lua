@@ -63,28 +63,30 @@ do
 		end
 		--print("DATA REPLICATED", Path)
 		--print("Data updated: "..(Path or "ALL"))
+		local oldValue = nil
 		local Current = RealData[name]
 		local PathKeys = path or {}
 		for Index,NextKey in pairs(PathKeys) do
 			if type(Current) == "table" then
 				NextKey = tonumber(NextKey) or NextKey
 				if Index >= #PathKeys then
+					oldValue = Current[NextKey]
 					Current[NextKey] = value
 				elseif Current[NextKey] then
 					Current = Current[NextKey]
 				else
-					warn("Path error | "..path)
+					warn("Path error | " .. table.concat(path, "."))
 					warn("Data may be out of sync, re-syncing with server...")
 					UpdateRoot(name, GetDataFunction:InvokeServer(name))
 				end
 			else
-				warn("Invalid path | "..path)
+				warn("Invalid path | " .. table.concat(path, "."))
 			end
 		end
 		if #PathKeys == 0 then
 			UpdateRoot(name, value)
 		end
-		ClientMeta:PathChanged(name, path, value)
+		ClientMeta:PathChanged(name, path, value, oldValue, RealData[name])
 	end)
 end
 

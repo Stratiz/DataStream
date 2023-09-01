@@ -107,17 +107,18 @@ end
 
 --= API Functions =--
 
-function DataMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any)
+function DataMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any, rawData: {})
     local targetCache = SignalCache[name]
 
     if targetCache then
         local currentParent = targetCache
 
+        local currentPath = {}
         for _, index in path do
             local signalData = getmetatable(currentParent)
 
             if signalData then
-                signalData.Signal:Fire("Changed", value, oldValue)
+                signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath))
             end
 
             local nextParent = currentParent[index]
@@ -125,15 +126,17 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
                 local nextSignalData = getmetatable(nextParent)
                 if nextSignalData then
                     if value == nil then
-                        nextSignalData.Signal:Fire("ChildRemoved", index)
+                        nextSignalData.Signal:Fire("ChildRemoved", path[#path])
                     elseif oldValue == nil then
-                        nextSignalData.Signal:Fire("ChildAdded", index)
+                        nextSignalData.Signal:Fire("ChildAdded", path[#path])
                     end
                 end
                 currentParent = nextParent
             else
                 break
             end
+
+            table.insert(currentPath, index)
         end
     end
 end
@@ -197,8 +200,10 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
-                return BindChanged(name, truePathTable, function(_, newValue, oldValue)
-                    callback(newValue, oldValue)
+                return BindChanged(name, truePathTable, function(method, newValue)
+                    if method == CatcherMeta.LastIndex then
+                        callback(newValue)
+                    end
                 end)
             elseif CatcherMeta.LastIndex == "ChildAdded" or CatcherMeta.LastIndex == "ChildRemoved" then
                 local callback = table.pack(...)[1]
