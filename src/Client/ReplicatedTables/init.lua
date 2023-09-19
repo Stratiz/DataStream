@@ -61,8 +61,7 @@ do
 		if not RealData[name] then
 			RealData[name] = {}
 		end
-		--print("DATA REPLICATED", Path)
-		--print("Data updated: "..(Path or "ALL"))
+
 		local oldValue = nil
 		local Current = RealData[name]
 		local PathKeys = path or {}

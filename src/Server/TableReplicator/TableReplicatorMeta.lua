@@ -69,7 +69,8 @@ local function BindChanged(name, ownerId, pathTable, callback)
     end
 
     local newConnection = currentSignalData.Signal:Connect(callback)
-    local rbxSignalProxy = setmetatable({
+
+    local proxyMeta = {
         Disconnect = function()
             newConnection:Disconnect()
             currentSignalData.ConnectionCount -= 1
@@ -77,14 +78,21 @@ local function BindChanged(name, ownerId, pathTable, callback)
                 currentSignalData.Signal:Destroy()
                 setmetatable(currentCache, nil)
             end
-        end},
+        end
+    }
+    proxyMeta.Destroy = proxyMeta.Disconnect
+
+    local rbxSignalProxy = setmetatable(proxyMeta ,
         {__index = newConnection}
     )
     currentSignalData.ConnectionCount += 1
     return rbxSignalProxy :: RBXScriptConnection
 end
 
-local function MakeCatcherObject(metaTable)
+local function MakeCatcherObject(oldMetaTable)
+    local metaTable = ReplicatorUtils:DeepCopyTable(oldMetaTable)
+    metaTable.LastTable = oldMetaTable.LastTable
+
     local NewObject = newproxy(true)
     local ObjectMetaTable = getmetatable(NewObject)
     ObjectMetaTable.__tostring = function(dataObject)
@@ -118,31 +126,40 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
 
     if targetCache then
         local currentParent = targetCache
-
         local currentPath = {}
-        for _, index in path do
+
+        local function checkAndTrigger()
             local signalData = getmetatable(currentParent)
 
             if signalData then
                 signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath))
             end
+        end
 
+        -- Check if root changed
+        checkAndTrigger()
+        
+        for depth, index in path do
+            table.insert(currentPath, index)
+
+            -- Check for child added and removed
+            local parentSignalData = getmetatable(currentParent)
+            if parentSignalData and depth == #path then
+                if value == nil then
+                    parentSignalData.Signal:Fire("ChildRemoved", path[#path])
+                elseif oldValue == nil then
+                    parentSignalData.Signal:Fire("ChildAdded", path[#path])
+                end
+            end
+
+            -- Check for changed
             local nextParent = currentParent[index]
             if nextParent then
-                local nextSignalData = getmetatable(nextParent)
-                if nextSignalData then
-                    if value == nil then
-                        nextSignalData.Signal:Fire("ChildRemoved", path[#path])
-                    elseif oldValue == nil then
-                        nextSignalData.Signal:Fire("ChildAdded", path[#path])
-                    end
-                end
                 currentParent = nextParent
+                checkAndTrigger()
             else
                 break
             end
-
-            table.insert(currentPath, index)
         end
     end
 end
@@ -269,6 +286,8 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         __newindex = function(dataObject,NextIndex,Value)
             local CatcherMeta = getmetatable(dataObject)
             local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
+            NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
+
             local OldValue = nil
             if NextMetaTable.FinalIndex then
                 OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
@@ -337,7 +356,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                     NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
                 else
-                    OldValue = SetValueFromPath(NextMetaTable.PathTable, ReplicatorUtils:DeepCopyTable(value))
+                    OldValue = SetValueFromPath(truePathTable, ReplicatorUtils:DeepCopyTable(value))
                 end
 
                 internalChangedTrigger(NextMetaTable, OldValue, value, true)

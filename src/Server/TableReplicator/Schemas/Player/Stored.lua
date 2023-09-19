@@ -16,5 +16,7 @@ return {
     },
     Purchases = {},
     ClaimedCodes = {},
-    EarlyAccess = false
+    EarlyAccess = false,
+
+    Quests = {}
 }

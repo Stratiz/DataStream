@@ -90,7 +90,8 @@ local function BindChanged(name, pathTable, callback)
     end
 
     local newConnection = currentSignalData.Signal:Connect(callback)
-    local rbxSignalProxy = setmetatable({
+
+    local proxyMeta = {
         Disconnect = function()
             newConnection:Disconnect()
             currentSignalData.ConnectionCount -= 1
@@ -98,7 +99,11 @@ local function BindChanged(name, pathTable, callback)
                 currentSignalData.Signal:Destroy()
                 setmetatable(currentCache, nil)
             end
-        end},
+        end
+    }
+    proxyMeta.Destroy = proxyMeta.Disconnect
+
+    local rbxSignalProxy = setmetatable(proxyMeta ,
         {__index = newConnection}
     )
     currentSignalData.ConnectionCount += 1
@@ -112,31 +117,40 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
 
     if targetCache then
         local currentParent = targetCache
-
         local currentPath = {}
-        for _, index in path do
+
+        local function checkAndTrigger()
             local signalData = getmetatable(currentParent)
 
             if signalData then
                 signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath))
             end
+        end
 
+        -- Check if root changed
+        checkAndTrigger()
+        
+        for depth, index in path do
+            table.insert(currentPath, index)
+
+            -- Check for child added and removed
+            local parentSignalData = getmetatable(currentParent)
+            if parentSignalData and depth == #path then
+                if value == nil then
+                    parentSignalData.Signal:Fire("ChildRemoved", path[#path])
+                elseif oldValue == nil then
+                    parentSignalData.Signal:Fire("ChildAdded", path[#path])
+                end
+            end
+
+            -- Check for changed
             local nextParent = currentParent[index]
             if nextParent then
-                local nextSignalData = getmetatable(nextParent)
-                if nextSignalData then
-                    if value == nil then
-                        nextSignalData.Signal:Fire("ChildRemoved", path[#path])
-                    elseif oldValue == nil then
-                        nextSignalData.Signal:Fire("ChildAdded", path[#path])
-                    end
-                end
                 currentParent = nextParent
+                checkAndTrigger()
             else
                 break
             end
-
-            table.insert(currentPath, index)
         end
     end
 end
