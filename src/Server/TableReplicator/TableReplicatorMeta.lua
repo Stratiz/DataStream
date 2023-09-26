@@ -128,6 +128,23 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
         local currentParent = targetCache
         local currentPath = {}
 
+        local function childRecurse(targetChild, childPath, check)
+            if check then
+                local childSignalData = getmetatable(targetChild)
+
+                if childSignalData then
+                    childSignalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, childPath))
+                end
+            end
+
+            for index, child in targetChild do
+                local newTable = table.clone(childPath)
+                table.insert(newTable, index)
+
+                childRecurse(child, newTable, true)
+            end
+        end
+
         local function checkAndTrigger()
             local signalData = getmetatable(currentParent)
 
@@ -138,8 +155,14 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
 
         -- Check if root changed
         checkAndTrigger()
+
+        if #path == 0 then
+            childRecurse(currentParent, currentPath, false)
+            return
+        end
         
         for depth, index in path do
+            --// Handles the case when changed signals belong to children of the changed path
             table.insert(currentPath, index)
 
             -- Check for child added and removed
@@ -156,9 +179,11 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
             local nextParent = currentParent[index]
             if nextParent then
                 currentParent = nextParent
+                
+                if depth == #path then
+                    childRecurse(currentParent, currentPath)
+                end
                 checkAndTrigger()
-            else
-                break
             end
         end
     end
@@ -246,6 +271,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         Owner = owner,
         --// Meta table made to catch and replicate changes
         __index = function(dataObject, NextIndex)
+            NextIndex = tonumber(NextIndex) or NextIndex
             local CatcherMeta = getmetatable(dataObject)
 
             if CatcherMeta.MethodLocked then
@@ -284,6 +310,8 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
             return MakeCatcherObject(NextMetaTable)
         end,
         __newindex = function(dataObject,NextIndex,Value)
+            NextIndex = tonumber(NextIndex) or NextIndex
+
             local CatcherMeta = getmetatable(dataObject)
             local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)

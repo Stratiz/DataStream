@@ -119,6 +119,23 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
         local currentParent = targetCache
         local currentPath = {}
 
+        local function childRecurse(targetChild, childPath, check)
+            if check then
+                local childSignalData = getmetatable(targetChild)
+
+                if childSignalData then
+                    childSignalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, childPath))
+                end
+            end
+
+            for index, child in targetChild do
+                local newTable = table.clone(childPath)
+                table.insert(newTable, index)
+
+                childRecurse(child, newTable, true)
+            end
+        end
+
         local function checkAndTrigger()
             local signalData = getmetatable(currentParent)
 
@@ -129,8 +146,14 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
 
         -- Check if root changed
         checkAndTrigger()
+
+        if #path == 0 then
+            childRecurse(currentParent, currentPath, false)
+            return
+        end
         
         for depth, index in path do
+            --// Handles the case when changed signals belong to children of the changed path
             table.insert(currentPath, index)
 
             -- Check for child added and removed
@@ -147,9 +170,11 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
             local nextParent = currentParent[index]
             if nextParent then
                 currentParent = nextParent
+                
+                if depth == #path then
+                    childRecurse(currentParent, currentPath)
+                end
                 checkAndTrigger()
-            else
-                break
             end
         end
     end

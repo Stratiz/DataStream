@@ -116,6 +116,8 @@ function TableReplicator:AddPlayerReplicatorTemplate(name : string, schema : {[a
 
     Replicating.Player[name] = CreatePlayerReplicatorCatcher(name)
 
+    SchemaCache[name] = schema
+
     Players.PlayerAdded:Connect(function(player)
         self:MakeReplicatorForPlayer(name, player, ReplicatorUtils:DeepCopyTable(schema))
     end)
@@ -138,8 +140,6 @@ function TableReplicator:MakeReplicatorForPlayer(name : string, player : Player,
         RegisteredPlayers[player] = {}
     end
     RegisteredPlayers[player][name] = true
-
-    SchemaCache[name] = schema
 
     local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
     local newTableReplicator = TableReplicatorMeta:MakeTableReplicatorObject(name, schema, player)
