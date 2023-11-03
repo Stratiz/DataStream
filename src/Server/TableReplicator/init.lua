@@ -38,7 +38,7 @@ local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("R
 
 --= Variables =--
 
-local GetData =  ReplicatorRemotes:Get("Function", "GetData")
+local GetDataFunction =  ReplicatorRemotes:Get("Function", "GetData")
 local Replicating = {
     Player = {},
     Global = {}
@@ -81,7 +81,7 @@ local function CreatePlayerReplicatorCatcher(name)
         if targetPlayer then
             playerTableReplicatorCache[targetIndex] = Value
             if Value == nil then
-                TableReplicatorMeta:TriggerReplicate(targetPlayer, name, "", Value)
+                TableReplicatorMeta:TriggerReplicate(targetPlayer, name, {}, Value)
             end
         else
             warn("Player not found for index: " .. targetIndex)
@@ -185,19 +185,29 @@ do
         end
     end
 
-    GetData.OnServerInvoke = function(player, schemaName)
+    GetDataFunction.OnServerInvoke = function(player, schemaName)
+
+        local function makeReturnDataFromSchema(schema)
+            local currentData = schema:Read()
+
+            return {
+                Data = currentData,
+                NonStringIndexes = TableReplicatorMeta:GetNonStringIndexesFromValue(currentData)
+            }
+        end
+
         if not schemaName then
             local toReturn = {}
             local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
 
             for name, schema in pairs(Replicating.Player) do
                 if schema[playerIndex] then
-                    toReturn[name] = schema[playerIndex]:Read()
+                    toReturn[name] = makeReturnDataFromSchema(schema[playerIndex])
                 end
             end
 
             for name, schema in pairs(Replicating.Global) do
-                toReturn[name] = schema:Read()
+                toReturn[name] = makeReturnDataFromSchema(schema)
             end
 
             return toReturn
@@ -205,12 +215,12 @@ do
             if Replicating.Player[schemaName] then
                 local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
                 if Replicating.Player[schemaName][playerIndex] then
-                    return Replicating.Player[schemaName][playerIndex]:Read()
+                    return makeReturnDataFromSchema(Replicating.Player[schemaName][playerIndex])
                 else
                     return nil
                 end
             else
-                return Replicating.Global[schemaName]:Read()
+                return makeReturnDataFromSchema(Replicating.Global[schemaName])
             end
         end
     end

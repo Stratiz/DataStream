@@ -49,15 +49,43 @@ local function UpdateRoot(rootName : string, data : any)
 	end
 end
 
+local function FixValueIndexes(value : any, nonStringIndexesInValue : {{ Path : {string}, IndexValue : any }})
+	if type(value) ~= "table" then
+		return
+	end
+
+	for _, nonStringIndex in nonStringIndexesInValue do
+		local pathKeys = nonStringIndex.Path
+		local current = value
+		for index, nextKey in pairs(pathKeys) do
+			if type(current) == "table" then
+				if index >= #pathKeys then
+					current[nonStringIndex.IndexValue] = current[nextKey]
+					current[nextKey] = nil
+				elseif current[nextKey] then
+					current = current[nextKey]
+				else
+					warn("Fix Path error | " .. table.concat(pathKeys, "."))
+				end
+			else
+				warn("Invalid Fix path | " .. table.concat(pathKeys, "."))
+			end
+		end
+	end
+end
+
 --= Initializers =--
 do
 	--// Fetch stores from server
-	for name, data in pairs(GetDataFunction:InvokeServer()) do
-		RealData[name] = data
+	for name, schemaInfo in pairs(GetDataFunction:InvokeServer()) do
+		FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
+		RealData[name] = schemaInfo.Data
 	end
 	
 	--// Listen for updates
-	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : {string}, value : any?)
+	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : {string}, value : any, nonStringIndexesInValue : {{ Path : {string}, IndexValue : any }})
+		FixValueIndexes(value, nonStringIndexesInValue)
+		
 		if not RealData[name] then
 			RealData[name] = {}
 		end
@@ -67,7 +95,6 @@ do
 		local PathKeys = path or {}
 		for Index,NextKey in pairs(PathKeys) do
 			if type(Current) == "table" then
-				NextKey = tonumber(NextKey) or NextKey
 				if Index >= #PathKeys then
 					oldValue = Current[NextKey]
 					Current[NextKey] = value
@@ -76,7 +103,14 @@ do
 				else
 					warn("Path error | " .. table.concat(path, "."))
 					warn("Data may be out of sync, re-syncing with server...")
-					UpdateRoot(name, GetDataFunction:InvokeServer(name))
+					local schemaInfo = GetDataFunction:InvokeServer(name)
+
+					if schemaInfo then
+						FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
+						UpdateRoot(name, schemaInfo.Data)
+					else
+						UpdateRoot(name, {})
+					end
 				end
 			else
 				warn("Invalid path | " .. table.concat(path, "."))

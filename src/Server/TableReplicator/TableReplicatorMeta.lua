@@ -32,7 +32,8 @@ local METHODS = {
     ChildAdded = true,
     ChildRemoved = true,
     Read = true,
-    Changed = true
+    Changed = true,
+    Write = true
 }
 
 --= Variables =--
@@ -184,6 +185,8 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
                     childRecurse(currentParent, currentPath)
                 end
                 checkAndTrigger()
+            else
+                break
             end
         end
     end
@@ -192,19 +195,53 @@ end
 
 --= API Functions =--
 
+function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string}, IndexValue : any}}
+    local nonStringIndexes = {} -- Keep track of non-string indexes to fix them later after remote event encoding
+    local function checkNonStringIndex(targetValue, targetPathTable)
+        if type(targetValue) == "table" then
+            for index, _ in pairs(targetValue) do
+                if type(index) ~= "string" then
+                    local newPathTable = table.clone(targetPathTable)
+                    local indexAsString = tostring(index)
 
-function DataMeta:TriggerReplicate(owner, name, ...) 
+                    while targetValue[indexAsString] do
+                        indexAsString ..= "_"
+                    end
+
+                    targetValue[indexAsString] = targetValue[index]
+                    targetValue[index] = nil
+
+                    table.insert(newPathTable, indexAsString)
+                    table.insert(nonStringIndexes, {
+                        Path = newPathTable,
+                        IndexValue = index
+                    })
+
+                    checkNonStringIndex(targetValue[indexAsString], newPathTable)
+                end
+            end
+        end
+    end
+
+    checkNonStringIndex(value, {})
+
+    return nonStringIndexes
+end
+
+function DataMeta:TriggerReplicate(owner, name, pathTable, value)
+    local nonStringIndexes = self:GetNonStringIndexesFromValue(value)
+
     if owner then
-        DataUpdateEvent:FireClient(owner, name, ...)
+        DataUpdateEvent:FireClient(owner, name, pathTable, value, nonStringIndexes)
     else
-        DataUpdateEvent:FireAllClients(name, ...)
+        DataUpdateEvent:FireAllClients(name, pathTable, value, nonStringIndexes)
     end
 end
 
 function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : any}, owner : Player?)
-    local function ReplicateData(pathTable : { string }, ...)
+    local function ReplicateData(pathTable : { string }, value : any)
         --TODO: Finish converting to table based system instead of strings
-        self:TriggerReplicate(owner, name, pathTable, ...)
+        self:TriggerReplicate(owner, name, pathTable, value)
     end
 
     local function SetValueFromPath(pathTable : {string}, Value)
@@ -220,7 +257,6 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         else
             local LastStep = rawData
             for Index, PathFragment in ipairs(pathTable or {}) do
-                PathFragment = tonumber(PathFragment) or PathFragment
                 if LastStep then
                     if Index == #pathTable then
                         local OldValue = LastStep[PathFragment]
@@ -271,7 +307,6 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         Owner = owner,
         --// Meta table made to catch and replicate changes
         __index = function(dataObject, NextIndex)
-            NextIndex = tonumber(NextIndex) or NextIndex
             local CatcherMeta = getmetatable(dataObject)
 
             if CatcherMeta.MethodLocked then
@@ -310,7 +345,6 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
             return MakeCatcherObject(NextMetaTable)
         end,
         __newindex = function(dataObject,NextIndex,Value)
-            NextIndex = tonumber(NextIndex) or NextIndex
 
             local CatcherMeta = getmetatable(dataObject)
             local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
@@ -395,7 +429,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     error("Attempted to insert a value into a non-table value.")
                 else
                     local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
-                    table.insert(CatcherMeta.LastTable,...)
+                    table.insert(CatcherMeta.LastTable, ...)
                     internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
                     ReplicateData(truePathTable, CatcherMeta.LastTable)
                 end
@@ -404,8 +438,8 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     error("Attempted to remove a value from a non-table value.")
                 else
                     local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
-                    table.remove(CatcherMeta.LastTable,...)
-                    internalChangedTrigger(CatcherMeta,OldTable,CatcherMeta.LastTable, true)
+                    table.remove(CatcherMeta.LastTable, ...)
+                    internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
                     ReplicateData(truePathTable, CatcherMeta.LastTable)
                 end
             elseif CatcherMeta.LastIndex == "Changed" then

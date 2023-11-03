@@ -175,6 +175,8 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
                     childRecurse(currentParent, currentPath)
                 end
                 checkAndTrigger()
+            else
+                break
             end
         end
     end
