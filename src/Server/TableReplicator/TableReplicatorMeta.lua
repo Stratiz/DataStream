@@ -229,12 +229,13 @@ function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string},
 end
 
 function DataMeta:TriggerReplicate(owner, name, pathTable, value)
-    local nonStringIndexes = self:GetNonStringIndexesFromValue(value)
+    local valueForTransport = ReplicatorUtils:DeepCopyTable(value)
+    local nonStringIndexes = self:GetNonStringIndexesFromValue(valueForTransport)
 
     if owner then
-        DataUpdateEvent:FireClient(owner, name, pathTable, value, nonStringIndexes)
+        DataUpdateEvent:FireClient(owner, name, pathTable, valueForTransport, nonStringIndexes)
     else
-        DataUpdateEvent:FireAllClients(name, pathTable, value, nonStringIndexes)
+        DataUpdateEvent:FireAllClients(name, pathTable, valueForTransport, nonStringIndexes)
     end
 end
 
