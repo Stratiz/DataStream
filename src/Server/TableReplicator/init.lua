@@ -172,6 +172,29 @@ function TableReplicator:MakeGlobalReplicator(name : string, schema : {[any] : a
     Replicating.Global[name] = TableReplicatorMeta:MakeTableReplicatorObject(name, schema)
 end
 
+function TableReplicator:GetPlayersWithSchema(name : string) : {Player}
+    local globalReplicator = Replicating.Global[name]
+    if globalReplicator then
+        return Players:GetPlayers()
+    end
+
+    local playerReplicator = Replicating.Player[name]
+    if not playerReplicator then
+        error("Attempt to get players in non-existent schema '"..tostring(name).."'")
+    end
+
+    local metatable = getmetatable(playerReplicator)
+
+    local toReturn = {}
+    for playerIndex, _ in pairs(metatable._playerReplicatorCache) do
+        local player = Players:GetPlayerByUserId(playerIndex)
+        if player then
+            table.insert(toReturn, player)
+        end
+    end
+    return toReturn
+end
+
 --= Initializers =--
 do
     for _, playerSchema in script.Schemas.Player:GetChildren() do
@@ -224,29 +247,6 @@ do
             end
         end
     end
-end
-
-function TableReplicator:GetPlayersWithSchema(name : string) : {Player}
-    local globalReplicator = Replicating.Global[name]
-    if globalReplicator then
-        return Players:GetPlayers()
-    end
-
-    local playerReplicator = Replicating.Player[name]
-    if not playerReplicator then
-        error("Attempt to get players in non-existent schema '"..tostring(name).."'")
-    end
-
-    local metatable = getmetatable(playerReplicator)
-
-    local toReturn = {}
-    for playerIndex, _ in pairs(metatable._playerReplicatorCache) do
-        local player = Players:GetPlayerByUserId(playerIndex)
-        if player then
-            table.insert(toReturn, player)
-        end
-    end
-    return toReturn
 end
 
 --= Return Module =--
