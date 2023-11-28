@@ -83,6 +83,7 @@ For our examples, we will be using the following schemas
 ```lua
 return { --Schemas/Global/GameData.lua
     CurrentGameTime = 0,
+    GlobalPlaytime = 0,
     PlayerInGame = {},
     CurrentGameMessage = "Intermission",
     Stats = {
@@ -104,3 +105,37 @@ return { --Schemas/Player/Stored.lua
 }
 ```
 
+## Examples
+
+*Note: These are all for example sake, some of these methods may not be the most efficient solutions depending on your use-case.*
+
+1. Increase playtime each second for a player:
+
+```lua
+-- Server
+local Players = game:GetService("Players")
+local DataStream = require(DataStreamModule)
+
+local globalGameDataStream = DataStream.GameData
+
+local function SetupPlayer(player : Player)
+    local playerStoredStream = DataStream.Stored[olayer]
+
+    task.spawn(function()
+        while player.Parent and task.wait(1) do
+            playerStoredStream.PlaytimeSeconds += 1
+            globalGameDataStream.GlobalPlaytime += 1
+        end
+    end)
+end
+
+
+-- Client
+
+local DataStreamClient = require(DataStreamClientModule)
+
+DataStreamClient.Stored.PlaytimeSeconds:Changed(function(seconds : number)
+    print("Current player seconds")
+end)
+
+```
