@@ -140,6 +140,7 @@ do
 	for _, update in pairs(UpdateCache) do
 		UpdateData(unpack(update))
 	end
+	UpdateCache = nil
 end
 
 --= Return Module =--
