@@ -32,9 +32,12 @@ local DataUpdateEvent = ReplicatorRemotes:Get("Event", "DataUpdate")
 --= Constants =--
 
 --= Variables =--
+
 local RawWarn = warn
 local RawPrint = print
 local RealData = {}
+local DidFetch = false
+local UpdateCache = {}
 
 --= Internal Functions =--
 
@@ -74,58 +77,74 @@ local function FixValueIndexes(value : any, nonStringIndexesInValue : {{ Path : 
 	end
 end
 
+local function UpdateData(name : string, path : {string}, value : any, nonStringIndexesInValue : {{ Path : {string}, IndexValue : any }})
+	FixValueIndexes(value, nonStringIndexesInValue)
+	
+	if not RealData[name] then
+		RealData[name] = {}
+	end
+
+	local oldValue = nil
+	local Current = RealData[name]
+	local PathKeys = path or {}
+	for Index,NextKey in pairs(PathKeys) do
+		if type(Current) == "table" then
+			if Index >= #PathKeys then
+				oldValue = Current[NextKey]
+				Current[NextKey] = value
+			elseif Current[NextKey] then
+				Current = Current[NextKey]
+			else
+				warn("Path error | " .. table.concat(path, "."))
+				warn("Data may be out of sync, re-syncing with server...")
+				local schemaInfo = GetDataFunction:InvokeServer(name)
+
+				if schemaInfo then
+					FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
+					UpdateRoot(name, schemaInfo.Data)
+				else
+					UpdateRoot(name, {})
+				end
+			end
+		else
+			warn("Invalid path | " .. table.concat(path, "."))
+		end
+	end
+	if #PathKeys == 0 then
+		UpdateRoot(name, value)
+	end
+	ClientMeta:PathChanged(name, path, value, oldValue, RealData[name])
+end
+
 --= Initializers =--
 do
+	--// Listen for updates
+	DataUpdateEvent.OnClientEvent:Connect(function(...)
+		if not DidFetch then
+			table.insert(UpdateCache, {...})
+		else
+			UpdateData(...)
+		end
+	end)
+
 	--// Fetch stores from server
 	for name, schemaInfo in pairs(GetDataFunction:InvokeServer()) do
 		FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
 		RealData[name] = schemaInfo.Data
 	end
-	
-	--// Listen for updates
-	DataUpdateEvent.OnClientEvent:Connect(function(name : string, path : {string}, value : any, nonStringIndexesInValue : {{ Path : {string}, IndexValue : any }})
-		FixValueIndexes(value, nonStringIndexesInValue)
-		
-		if not RealData[name] then
-			RealData[name] = {}
-		end
-
-		local oldValue = nil
-		local Current = RealData[name]
-		local PathKeys = path or {}
-		for Index,NextKey in pairs(PathKeys) do
-			if type(Current) == "table" then
-				if Index >= #PathKeys then
-					oldValue = Current[NextKey]
-					Current[NextKey] = value
-				elseif Current[NextKey] then
-					Current = Current[NextKey]
-				else
-					warn("Path error | " .. table.concat(path, "."))
-					warn("Data may be out of sync, re-syncing with server...")
-					local schemaInfo = GetDataFunction:InvokeServer(name)
-
-					if schemaInfo then
-						FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
-						UpdateRoot(name, schemaInfo.Data)
-					else
-						UpdateRoot(name, {})
-					end
-				end
-			else
-				warn("Invalid path | " .. table.concat(path, "."))
-			end
-		end
-		if #PathKeys == 0 then
-			UpdateRoot(name, value)
-		end
-		ClientMeta:PathChanged(name, path, value, oldValue, RealData[name])
+	task.delay(3, function()
+		DidFetch = true
 	end)
+
+	--// Update data from cache after fetch
+	for _, update in pairs(UpdateCache) do
+		UpdateData(unpack(update))
+	end
 end
 
 --= Return Module =--
 return setmetatable(ReplicatedTables, {
-	__index = function(self, index)
+	__index = function(_, index)
 		if RealData[index] then
 			return ClientMeta:MakeTableReplicatorObject(index, RealData[index])
 		else
