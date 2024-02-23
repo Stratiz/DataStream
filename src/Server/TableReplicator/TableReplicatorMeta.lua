@@ -197,19 +197,18 @@ end
 
 function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string}, IndexValue : any}}
     local nonStringIndexes = {} -- Keep track of non-string indexes to fix them later after remote event encoding
+    
     local function checkNonStringIndex(targetValue, targetPathTable)
         if type(targetValue) == "table" then
-            for index, _ in pairs(targetValue) do
+            local newTargetValue = {}
+            for index, child in pairs(targetValue) do
+                local newPathTable = table.clone(targetPathTable)
                 if type(index) ~= "string" then
-                    local newPathTable = table.clone(targetPathTable)
                     local indexAsString = tostring(index)
 
                     while targetValue[indexAsString] do
                         indexAsString ..= "_"
                     end
-
-                    targetValue[indexAsString] = targetValue[index]
-                    targetValue[index] = nil
 
                     table.insert(newPathTable, indexAsString)
                     table.insert(nonStringIndexes, {
@@ -217,20 +216,23 @@ function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string},
                         IndexValue = index
                     })
 
-                    checkNonStringIndex(targetValue[indexAsString], newPathTable)
+                    newTargetValue[indexAsString] = checkNonStringIndex(child, newPathTable)
+                else
+                    table.insert(newPathTable, index)
+                    newTargetValue[index] = checkNonStringIndex(child, newPathTable)
                 end
             end
+            return newTargetValue
         end
+        return targetValue
     end
 
-    checkNonStringIndex(value, {})
-
-    return nonStringIndexes
+    local newValue = checkNonStringIndex(value, {})
+    return nonStringIndexes, newValue
 end
 
 function DataMeta:TriggerReplicate(owner, name, pathTable, value)
-    local valueForTransport = ReplicatorUtils:DeepCopyTable(value)
-    local nonStringIndexes = self:GetNonStringIndexesFromValue(valueForTransport)
+    local nonStringIndexes, valueForTransport = self:GetNonStringIndexesFromValue(ReplicatorUtils:DeepCopyTable(value))
 
     if owner then
         DataUpdateEvent:FireClient(owner, name, pathTable, valueForTransport, nonStringIndexes)
