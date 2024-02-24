@@ -132,15 +132,13 @@ do
 		FixValueIndexes(schemaInfo.Data, schemaInfo.NonStringIndexes)
 		RealData[name] = schemaInfo.Data
 	end
-	task.delay(3, function()
-		DidFetch = true
-	end)
+	DidFetch = true
 
 	--// Update data from cache after fetch
 	for _, update in pairs(UpdateCache) do
 		UpdateData(unpack(update))
 	end
-	UpdateCache = nil
+	UpdateCache = {}
 end
 
 --= Return Module =--
