@@ -209,13 +209,12 @@ do
     end
 
     GetDataFunction.OnServerInvoke = function(player, schemaName)
-
         local function makeReturnDataFromSchema(schema)
-            local currentData = schema:Read()
+            local nonStringIndexes, valueForTransport = TableReplicatorMeta:GetNonStringIndexesFromValue(schema:Read())
 
             return {
-                Data = currentData,
-                NonStringIndexes = TableReplicatorMeta:GetNonStringIndexesFromValue(currentData)
+                Data = valueForTransport,
+                NonStringIndexes = nonStringIndexes
             }
         end
 
