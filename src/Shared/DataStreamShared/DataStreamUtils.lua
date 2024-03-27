@@ -1,7 +1,20 @@
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TableReplicator = {}
+--[[
+    DataStreamUtils.lua
+    Stratiz
+    Created on 06/28/2023 @ 01:37
+    
+    Description:
+        Data stream utility functions.
+    
+--]]
 
-function TableReplicator.ResolvePlayerSchemaIndex(index : number | Player)
+--= Root =--
+
+local DataStreamUtils = { }
+
+--= API Functions =--
+
+function DataStreamUtils.ResolvePlayerSchemaIndex(index : number | Player) : string
     if typeof(index) == "Instance" and index:IsA("Player") then
         return tostring(index.UserId)
     elseif type(index) == "number" or type(index) == "string" and tonumber(index) then
@@ -11,22 +24,18 @@ function TableReplicator.ResolvePlayerSchemaIndex(index : number | Player)
     end
 end
 
-function TableReplicator.MakeRemote(remoteType : "Function" | "Event", name : string)
-	local RemoteFolder = ReplicatedStorage:FindFirstChild("_TABLE_REPLICATION_REMOTES")
-	if not RemoteFolder then
-		RemoteFolder = Instance.new("Folder")
-		RemoteFolder.Name = "_TABLE_REPLICATION_REMOTES"
-		RemoteFolder.Parent = ReplicatedStorage
-	end
+-- Remade concat since default concat only accepts string tables
+function DataStreamUtils.StringifyPathTable(pathTable : { any }) : string
+    local pathString = ""
 
-	local NewRemote = Instance.new("Remote"..remoteType)
-	NewRemote.Name = name
-	NewRemote.Parent = RemoteFolder
+    for i, value in pairs(pathTable) do
+        pathString = (i == 1 and "." or "").. pathString .. tostring(value)
+    end
 
-	return NewRemote
+    return pathString
 end
 
-function TableReplicator.CopyTable(target)
+function DataStreamUtils.CopyTable(target)
 	local new = {}
 	for key, value in pairs(target) do
 		new[key] = value
@@ -34,7 +43,7 @@ function TableReplicator.CopyTable(target)
 	return new
 end
 
-function TableReplicator:DeepCopyTable(target, _context)
+function DataStreamUtils:DeepCopyTable(target, _context)
     _context = _context or  {}
     if _context[target] then
         return _context[target]
@@ -52,4 +61,5 @@ function TableReplicator:DeepCopyTable(target, _context)
     end
 end
 
-return TableReplicator
+--= Return Module =--
+return DataStreamUtils

@@ -1,5 +1,5 @@
 --[[
-    TableReplicatorSignal.lua
+    DataStreamSignal.lua
     Stratiz
     Created on 06/28/2023 @ 01:30
     
@@ -10,7 +10,7 @@
 
 --= Root =--
 
-local TableReplicatorSignal = { }
+local DataStreamSignal = { }
 
 --= Types =--
 
@@ -24,32 +24,32 @@ export type Signal = {
 
 --= API Functions =--
 
-function TableReplicatorSignal:Connect(toExecute : (...any) -> ()) : RBXScriptConnection
+function DataStreamSignal:Connect(toExecute : (...any) -> ()) : RBXScriptConnection
     return self._bindable.Event:Connect(toExecute)
 end
 
-function TableReplicatorSignal:Once(toExecute : (...any) -> ()) : RBXScriptConnection
+function DataStreamSignal:Once(toExecute : (...any) -> ()) : RBXScriptConnection
     return self._bindable.Event:Once(toExecute)
 end
 
-function TableReplicatorSignal:Wait() : any
+function DataStreamSignal:Wait() : any
     return self._bindable.Event:Wait()
 end
 
-function TableReplicatorSignal:Fire(... : any)
+function DataStreamSignal:Fire(... : any)
     self._bindable:Fire(...)
 end
 
-function TableReplicatorSignal:Destroy()
+function DataStreamSignal:Destroy()
     self._bindable:Destroy()
 end
 
 --= Initializers =--
 
-TableReplicatorSignal.__index = TableReplicatorSignal
+DataStreamSignal.__index = DataStreamSignal
 
-function TableReplicatorSignal.new() : Signal
-    local self = setmetatable({}, TableReplicatorSignal)
+function DataStreamSignal.new() : Signal
+    local self = setmetatable({}, DataStreamSignal)
 
     self._bindable = Instance.new("BindableEvent")
     
@@ -57,4 +57,4 @@ function TableReplicatorSignal.new() : Signal
 end
 
 --= Return Module =--
-return TableReplicatorSignal
+return DataStreamSignal

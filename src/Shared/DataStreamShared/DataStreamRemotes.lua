@@ -1,11 +1,34 @@
-local ReplicatorRemotes = {}
+--[[
+    DataStreamRemotes.lua
+    Stratiz
+    Created/Documented on 03/27/2024 @ 12:29:20
+    
+    Description:
+        Handles remote events
+    
+--]]
 
-local RunService = game:GetService("RunService")
+
+--= Root =--
+local DataStreamRemotes = { }
+
+--= Roblox Services =--
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+--= Dependencies =--
+
+--= Types =--
+
+--= Variables =--
+
+local IsServer = RunService:IsServer()
+
+--= Constants =--
 
 local REMOTE_FOLDER_NAME = "_TABLE_REPLICATION_REMOTES"
 
-local IsServer = RunService:IsServer()
+--= Object References =--
 
 local RemoteFolder = IsServer == false and ReplicatedStorage:WaitForChild(REMOTE_FOLDER_NAME) or nil
 local RemoteCache = {
@@ -13,7 +36,13 @@ local RemoteCache = {
     Event = {}
 }
 
-function ReplicatorRemotes:Get(remoteType : "Function" | "Event", name : string)
+--= Public Variables =--
+
+--= Internal Functions =--
+
+--= API Functions =--
+
+function DataStreamRemotes:Get(remoteType : "Function" | "Event", name : string)
     local internalName = remoteType .. name
     if RemoteCache[remoteType][name] then
         return RemoteCache[remoteType][name]
@@ -42,4 +71,5 @@ function ReplicatorRemotes:Get(remoteType : "Function" | "Event", name : string)
     end
 end
 
-return ReplicatorRemotes
+--= Return Module =--
+return DataStreamRemotes

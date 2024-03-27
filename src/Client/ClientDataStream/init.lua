@@ -1,5 +1,5 @@
 --[[
-	ReplicatedTables.lua
+	ClientDataStream.lua
 	Stratiz
 	Created on 09/06/2022 @ 22:58
 	
@@ -9,25 +9,26 @@
 	Documentation:
 		To read the auto-replicated player data, index the module with the name of the table.
 		For example, DataStream by default has .Temp and .Stored schemas.
-		To read the Temp table, use ReplicatedTables.Temp, same thing with .Stored and any other tables you add.
+		To read the Temp table, use ClientDataStream.Temp, same thing with .Stored and any other tables you add.
 
 		Any modifications to the data will not be replicated to the server, and will be overwritten by the server's data.
 
 --]]
 
 --= Root =--
-local ReplicatedTables = { }
+local ClientDataStream = { }
 
 --= Dependencies =--
 
-local ClientMeta = require(script:WaitForChild("ClientReplicatedTablesMeta"))
-local CONFIG = require(script.ReplicatorClientConfig)
-local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
+local ClientMeta = require(script:WaitForChild("ClientClientDataStreamMeta"))
+local CONFIG = require(script.DataStreamClientConfig)
+local DataStreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamRemotes"))
+local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
 
 --= Object References =--
 
-local GetDataFunction = ReplicatorRemotes:Get("Function", "GetData")
-local DataUpdateEvent = ReplicatorRemotes:Get("Event", "DataUpdate")
+local GetDataFunction = DataStreamRemotes:Get("Function", "GetData")
+local DataUpdateEvent = DataStreamRemotes:Get("Event", "DataUpdate")
 
 --= Constants =--
 
@@ -42,7 +43,7 @@ local UpdateCache = {}
 --= Internal Functions =--
 
 local function warn(...)
-	RawWarn("[ReplicatedTables]", ...)
+	RawWarn("[ClientDataStream]", ...)
 end
 
 local function UpdateRoot(rootName : string, data : any)
@@ -68,10 +69,10 @@ local function FixValueIndexes(value : any, nonStringIndexesInValue : {{ Path : 
 				elseif current[nextKey] then
 					current = current[nextKey]
 				else
-					warn("Fix Path error | " .. table.concat(pathKeys, "."))
+					warn("Fix Path error | " .. DataStreamUtils.StringifyPathTable(pathKeys))
 				end
 			else
-				warn("Invalid Fix path | " .. table.concat(pathKeys, "."))
+				warn("Invalid Fix path | " .. DataStreamUtils.StringifyPathTable(pathKeys))
 			end
 		end
 	end
@@ -95,7 +96,7 @@ local function UpdateData(name : string, path : {string}, value : any, nonString
 			elseif Current[NextKey] then
 				Current = Current[NextKey]
 			else
-				warn("Path error | " .. table.concat(path, "."))
+				warn("Path error | " .. DataStreamUtils.StringifyPathTable(path))
 				warn("Data may be out of sync, re-syncing with server...")
 				local schemaInfo = GetDataFunction:InvokeServer(name)
 
@@ -107,7 +108,7 @@ local function UpdateData(name : string, path : {string}, value : any, nonString
 				end
 			end
 		else
-			warn("Invalid path | " .. table.concat(path, "."))
+			warn("Invalid path | " .. DataStreamUtils.StringifyPathTable(path))
 		end
 	end
 	if #PathKeys == 0 then
@@ -142,10 +143,10 @@ do
 end
 
 --= Return Module =--
-return setmetatable(ReplicatedTables, {
+return setmetatable(ClientDataStream, {
 	__index = function(_, index)
 		if RealData[index] then
-			return ClientMeta:MakeTableReplicatorObject(index, RealData[index])
+			return ClientMeta:MakeDataStreamObject(index, RealData[index])
 		else
 			return nil
 		end

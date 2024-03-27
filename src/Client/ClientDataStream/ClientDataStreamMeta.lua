@@ -1,5 +1,5 @@
 --[[
-    ClientReplicatedTablesMeta.lua
+    ClientDataStreamMeta.lua
     Stratiz
     Created on 06/28/2023 @ 01:52
     
@@ -9,15 +9,16 @@
 --]]
 
 --= Root =--
-local ClientReplicatedTablesMeta = { }
+
+local ClientDataStreamMeta = { }
 
 --= Roblox Services =--
 
 --= Dependencies =--
 
-local CONFIG = require(script.Parent.ReplicatorClientConfig)
-local ReplicatorUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorUtils"))
-local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
+local CONFIG = require(script.Parent.ClientDataStreamConfig)
+local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamSignal"))
 
 --= Object References =--
 
@@ -32,7 +33,6 @@ local METHODS = {
 
 --= Variables =--
 
-local DataMeta = {}
 local SignalCache = {}
 
 --= Internal Functions =--
@@ -44,9 +44,9 @@ local function MakeCatcherObject(metaTable)
         local CatcherMeta = getmetatable(dataObject)
 
         if CatcherMeta.MethodLocked == true then
-            return "TableReplicatorObjectMethod (".. table.concat(CatcherMeta.PathTable, ".")..")"
+            return "DataStreamObjectMethod (".. DataStreamUtils.StringifyPathTable(CatcherMeta.PathTable)..")"
         else
-            return "TableReplicatorObject (".. table.concat(CatcherMeta.PathTable, ".")..")"
+            return "DataStreamObject (".. DataStreamUtils.StringifyPathTable(CatcherMeta.PathTable)..")"
         end
     end
     for Index,Value in pairs(metaTable) do
@@ -112,7 +112,7 @@ end
 
 --= API Functions =--
 
-function DataMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any, rawData: {})
+function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any, rawData: {})
     local targetCache = SignalCache[name]
 
     if targetCache then
@@ -182,7 +182,7 @@ function DataMeta:PathChanged(name : string, path : {string}, value : any, oldVa
     end
 end
 
-function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | number] : any})
+function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[string | number] : any})
 
     local RootCatcherMeta
     RootCatcherMeta = {
@@ -209,7 +209,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
                 end
             end
 
-            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = DataStreamUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
 
             table.insert(NextMetaTable.PathTable, NextIndex)
@@ -237,7 +237,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[string | 
                     warn("You should be calling Read() with : instead of .")
                 end
 
-                return ReplicatorUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
+                return DataStreamUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
@@ -264,4 +264,4 @@ end
 
 --= Return Module =--
 
-return DataMeta
+return ClientDataStreamMeta

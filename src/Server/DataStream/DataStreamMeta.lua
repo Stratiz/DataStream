@@ -1,5 +1,5 @@
 --[[
-    TableReplicatorMeta.lua
+    DataStreamMeta.lua
     Stratiz
     Created on 06/28/2023 @ 02:29
     
@@ -16,15 +16,14 @@ local Players = game:GetService("Players")
 
 --= Dependencies =--
 
-local CONFIG = require(script.Parent.ReplicatorServerConfig)
-local ServerReplicatorUtils = require(script.Parent.TableReplicatorUtils)
-local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
-local ReplicatorUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorUtils"))
-local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
+local CONFIG = require(script.Parent.DataStreamServerConfig)
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamSignal"))
+local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
+local DataStreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamRemotes"))
 
 --= Object References =--
 
-local DataUpdateEvent = ReplicatorRemotes:Get("Event", "DataUpdate")
+local DataUpdateEvent = DataStreamRemotes:Get("Event", "DataUpdate")
 
 --= Constants =--
 
@@ -91,7 +90,7 @@ local function BindChanged(name, ownerId, pathTable, callback)
 end
 
 local function MakeCatcherObject(oldMetaTable)
-    local metaTable = ReplicatorUtils:DeepCopyTable(oldMetaTable)
+    local metaTable = DataStreamUtils:DeepCopyTable(oldMetaTable)
     metaTable.LastTable = oldMetaTable.LastTable
 
     local NewObject = newproxy(true)
@@ -100,9 +99,9 @@ local function MakeCatcherObject(oldMetaTable)
         local CatcherMeta = getmetatable(dataObject)
 
         if CatcherMeta.MethodLocked == true then
-            return "TableReplicatorObjectMethod (".. table.concat(CatcherMeta.PathTable, ".")..")"
+            return "DataStreamObjectMethod (".. DataStreamUtils.StringifyPathTable(CatcherMeta.PathTable) ..")"
         else
-            return "TableReplicatorObject (".. table.concat(CatcherMeta.PathTable, ".")..")"
+            return "DataStreamObject (".. DataStreamUtils.StringifyPathTable(CatcherMeta.PathTable) ..")"
         end
     end
     for Index,Value in pairs(metaTable) do
@@ -232,7 +231,7 @@ function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string},
 end
 
 function DataMeta:TriggerReplicate(owner, name, pathTable, value)
-    local nonStringIndexes, valueForTransport = self:GetNonStringIndexesFromValue(ReplicatorUtils:DeepCopyTable(value))
+    local nonStringIndexes, valueForTransport = self:GetNonStringIndexesFromValue(DataStreamUtils:DeepCopyTable(value))
 
     if owner then
         DataUpdateEvent:FireClient(owner, name, pathTable, valueForTransport, nonStringIndexes)
@@ -241,15 +240,14 @@ function DataMeta:TriggerReplicate(owner, name, pathTable, value)
     end
 end
 
-function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : any}, owner : Player?)
+function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, owner : Player?)
     local function ReplicateData(pathTable : { string }, value : any)
-        --TODO: Finish converting to table based system instead of strings
         self:TriggerReplicate(owner, name, pathTable, value)
     end
 
     local function SetValueFromPath(pathTable : {string}, Value)
         if pathTable == nil or #pathTable <= 0 then
-            local OldValue = ReplicatorUtils:DeepCopyTable(rawData)
+            local OldValue = DataStreamUtils:DeepCopyTable(rawData)
 
             table.clear(rawData)
             for key, newValue in Value do
@@ -277,8 +275,8 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
     end
 
     --// Local helper functions
-    local function internalChangedTrigger(meta,old,new, fromMethod : boolean)
-        local ownerId = ServerReplicatorUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
+    local function internalChangedTrigger(meta, old, new, fromMethod : boolean)
+        local ownerId = DataStreamUtils.ResolvePlayerSchemaIndex(meta.Owner and meta.Owner.UserId or 0)
 
         local pathTable = table.clone(meta.PathTable)
         if fromMethod then
@@ -286,18 +284,6 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         end
 
         TriggerPathChanged(name, ownerId, pathTable, new, old, rawData)
-
-        --[[if SignalCache[ownerId] and SignalCache[ownerId][name] then
-            local pathString = table.concat(meta.PathTable, ".")
-            print("Uhhh" , pathString, SignalCache[ownerId][name])
-            for path, data in pairs(SignalCache[ownerId][name]) do
-                
-                local StringStart, _ = string.find(pathString, path)
-                if StringStart == 1 or pathString == path then
-                    data.Signal:Fire(new, old, pathString)
-                end
-            end
-        end]]
     end
 
     local RootCatcherMeta
@@ -327,7 +313,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 end
             end
 
-            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = DataStreamUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
 
             table.insert(NextMetaTable.PathTable, NextIndex)
@@ -350,7 +336,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         __newindex = function(dataObject,NextIndex,Value)
 
             local CatcherMeta = getmetatable(dataObject)
-            local NextMetaTable = ReplicatorUtils.CopyTable(CatcherMeta)
+            local NextMetaTable = DataStreamUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
 
             local OldValue = nil
@@ -359,7 +345,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 NextMetaTable.LastTable[NextMetaTable.FinalIndex] = Value
             else
                 table.insert(NextMetaTable.PathTable, NextIndex)
-                OldValue = SetValueFromPath(NextMetaTable.PathTable, ReplicatorUtils:DeepCopyTable(Value))
+                OldValue = SetValueFromPath(NextMetaTable.PathTable, DataStreamUtils:DeepCopyTable(Value))
             end
 
             internalChangedTrigger(NextMetaTable,OldValue,Value, false)
@@ -402,7 +388,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
         end,
         __call = function(dataObject,self,...)
             local CatcherMeta = getmetatable(dataObject)
-            local ownerId = ServerReplicatorUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
+            local ownerId = DataStreamUtils.ResolvePlayerSchemaIndex(owner and owner.UserId or 0)
             local truePathTable = table.clone(CatcherMeta.PathTable)
             table.remove(truePathTable, #truePathTable)
 
@@ -411,7 +397,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     warn("You should be calling Read() with : instead of .")
                 end
 
-                return ReplicatorUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
+                return DataStreamUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
             elseif CatcherMeta.LastIndex == "Write" then
                 local value = table.pack(...)[1]
 
@@ -421,7 +407,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                     OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
                     NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
                 else
-                    OldValue = SetValueFromPath(truePathTable, ReplicatorUtils:DeepCopyTable(value))
+                    OldValue = SetValueFromPath(truePathTable, DataStreamUtils:DeepCopyTable(value))
                 end
 
                 internalChangedTrigger(NextMetaTable, OldValue, value, true)
@@ -431,7 +417,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 if CatcherMeta.FinalIndex then
                     error("Attempted to insert a value into a non-table value.")
                 else
-                    local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = DataStreamUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.insert(CatcherMeta.LastTable, ...)
                     internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
                     ReplicateData(truePathTable, CatcherMeta.LastTable)
@@ -440,7 +426,7 @@ function DataMeta:MakeTableReplicatorObject(name : string, rawData : {[any] : an
                 if CatcherMeta.FinalIndex then
                     error("Attempted to remove a value from a non-table value.")
                 else
-                    local OldTable = ReplicatorUtils:DeepCopyTable(CatcherMeta.LastTable)
+                    local OldTable = DataStreamUtils:DeepCopyTable(CatcherMeta.LastTable)
                     table.remove(CatcherMeta.LastTable, ...)
                     internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
                     ReplicateData(truePathTable, CatcherMeta.LastTable)

@@ -1,5 +1,5 @@
 --[[
-    TableReplicator.lua
+    DataStream.lua
     Stratiz
     Created on 11/30/2022 @ 03:13
     
@@ -8,9 +8,9 @@
     
     Usage:
 
-        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path = 100
-        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path:Read() -- Returns 100
-        TableReplicator[<SchemaName>].Some.Kind.Of.Table.Path:Changed(function(newValue, oldValue)
+        DataStream[<SchemaName>].Some.Kind.Of.Table.Path = 100
+        DataStream[<SchemaName>].Some.Kind.Of.Table.Path:Read() -- Returns 100
+        DataStream[<SchemaName>].Some.Kind.Of.Table.Path:Changed(function(newValue, oldValue)
             print(newValue)
         end)
 
@@ -18,7 +18,7 @@
 
 --= Root =--
 
-local TableReplicator = { }
+local DataStream = { }
 
 --= Roblox Services =--
 
@@ -26,11 +26,11 @@ local Players = game:GetService("Players")
 
 --= Dependencies =--
 
-local CONFIG = require(script.ReplicatorServerConfig)
-local TableReplicatorMeta = require(script:WaitForChild("TableReplicatorMeta"))
-local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorSignal"))
-local ReplicatorUtils = require(script.TableReplicatorUtils)
-local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("ReplicatorRemotes"))
+local CONFIG = require(script.ServerDataStreamConfig)
+local DataStreamMeta = require(script:WaitForChild("DataStreamMeta"))
+local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamSignal"))
+local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
+local StreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamRemotes"))
 
 --= Object References =--
 
@@ -38,7 +38,7 @@ local ReplicatorRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("R
 
 --= Variables =--
 
-local GetDataFunction =  ReplicatorRemotes:Get("Function", "GetData")
+local GetDataFunction =  StreamRemotes:Get("Function", "GetData")
 local Replicating = {
     Player = {},
     Global = {}
@@ -48,40 +48,40 @@ local SchemaCache = {}
 
 --= Internal Functions =--
 
-local function ValidateReplicatorName(name : string)
+local function ValidateStreamName(name : string)
     if Replicating.Global[name] or Replicating.Player[name] then
         error("Schema already exists with name: " .. name)
     end
-    if TableReplicator[name] then
+    if DataStream[name] then
         error("Schema cannot have the same name as a module method: " .. name)
     end
 end
 
-local function CreatePlayerReplicatorCatcher(name)
-    local playerTableReplicatorCache = {}
+local function CreatePlayerStreamCatcher(name)
+    local playerDataStreamCache = {}
     local proxy = newproxy(true)
     local metatable = getmetatable(proxy)
     
     local function checkForRegister(index)
-        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(index)
+        local targetIndex = DataStreamUtils.ResolvePlayerSchemaIndex(index)
         local targetPlayer = Players:GetPlayerByUserId(targetIndex)
 
         if targetPlayer then
             if not RegisteredPlayers[targetPlayer] or RegisteredPlayers[targetPlayer][name] == nil then
-                TableReplicator:MakeReplicatorForPlayer(name, targetPlayer, ReplicatorUtils:DeepCopyTable(SchemaCache[name]))
+                DataStream:MakeStreamForPlayer(name, targetPlayer, DataStreamUtils:DeepCopyTable(SchemaCache[name]))
             end
         end
     end
 
     metatable.__newindex = function(self,Index,Value)
-        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+        local targetIndex = DataStreamUtils.ResolvePlayerSchemaIndex(Index)
         local targetPlayer = Players:GetPlayerByUserId(targetIndex)
         checkForRegister(Index)
 
         if targetPlayer then
-            playerTableReplicatorCache[targetIndex] = Value
+            playerDataStreamCache[targetIndex] = Value
             if Value == nil then
-                TableReplicatorMeta:TriggerReplicate(targetPlayer, name, {}, Value)
+                DataStreamMeta:TriggerReplicate(targetPlayer, name, {}, Value)
             end
         else
             warn("Player not found for index: " .. targetIndex)
@@ -90,50 +90,50 @@ local function CreatePlayerReplicatorCatcher(name)
     end
     
     metatable.__index = function(self, Index)
-        local targetIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(Index)
+        local targetIndex = DataStreamUtils.ResolvePlayerSchemaIndex(Index)
         checkForRegister(Index)
 
 
-        return playerTableReplicatorCache[targetIndex]
+        return playerDataStreamCache[targetIndex]
     end
 
     metatable.__tostring = function()
-        return `PlayerReplicatorIndexCatcher ({name})`
+        return `PlayerStreamIndexCatcher ({name})`
     end
 
-    metatable._playerReplicatorCache = playerTableReplicatorCache
+    metatable._playerStreamCache = playerDataStreamCache
 
     return proxy
 end
 
 --= API Functions =--
-TableReplicator.PlayerReplicatorAdded = Signal.new()
-TableReplicator.PlayerReplicatorRemoving = Signal.new()
+DataStream.PlayerStreamAdded = Signal.new()
+DataStream.PlayerStreamRemoving = Signal.new()
 
 -- Adds a new schema to be a default replicator which is unique to each player
-function TableReplicator:AddPlayerReplicatorTemplate(name : string, schema : {[any] : any})
-    ValidateReplicatorName(name)
+function DataStream:AddPlayerStreamTemplate(name : string, schema : {[any] : any})
+    ValidateStreamName(name)
 
-    Replicating.Player[name] = CreatePlayerReplicatorCatcher(name)
+    Replicating.Player[name] = CreatePlayerStreamCatcher(name)
 
     SchemaCache[name] = schema
 
     Players.PlayerAdded:Connect(function(player)
-        self:MakeReplicatorForPlayer(name, player, ReplicatorUtils:DeepCopyTable(schema))
+        self:MakeStreamForPlayer(name, player, DataStreamUtils:DeepCopyTable(schema))
     end)
 
     Players.PlayerRemoving:Connect(function(player)
         RegisteredPlayers[player] = nil
-        self:RemoveReplicatorForPlayer(name, player)
+        self:RemoveStreamForPlayer(name, player)
     end)
 end
 
 -- Adds a schema to a specific player
-function TableReplicator:MakeReplicatorForPlayer(name : string, player : Player, schema : {[any] : any})
+function DataStream:MakeStreamForPlayer(name : string, player : Player, schema : {[any] : any})
     
     if not Replicating.Player[name] then
-        ValidateReplicatorName(name)
-        Replicating.Player[name] = CreatePlayerReplicatorCatcher(name)
+        ValidateStreamName(name)
+        Replicating.Player[name] = CreatePlayerStreamCatcher(name)
     end
 
     if not RegisteredPlayers[player] then
@@ -141,20 +141,20 @@ function TableReplicator:MakeReplicatorForPlayer(name : string, player : Player,
     end
     RegisteredPlayers[player][name] = true
 
-    local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
-    local newTableReplicator = TableReplicatorMeta:MakeTableReplicatorObject(name, schema, player)
-    Replicating.Player[name][playerIndex] = newTableReplicator
+    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
+    local newDataStream = DataStreamMeta:MakeDataStreamObject(name, schema, player)
+    Replicating.Player[name][playerIndex] = newDataStream
 
-    TableReplicator.PlayerReplicatorAdded:Fire(name, player)
+    DataStream.PlayerStreamAdded:Fire(name, player)
 
-    return newTableReplicator
+    return newDataStream
 end
 
 -- Removes a schema from a specific player
-function TableReplicator:RemoveReplicatorForPlayer(name : string, player : Player)
-    local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
+function DataStream:RemoveStreamForPlayer(name : string, player : Player)
+    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
 
-    TableReplicator.PlayerReplicatorRemoving:Fire(name, player)
+    DataStream.PlayerStreamRemoving:Fire(name, player)
 
     if RegisteredPlayers[player] then
         RegisteredPlayers[player][name] = nil
@@ -166,27 +166,27 @@ function TableReplicator:RemoveReplicatorForPlayer(name : string, player : Playe
 end
 
 -- Adds a schema whose data all players share.
-function TableReplicator:MakeGlobalReplicator(name : string, schema : {[any] : any})
-    ValidateReplicatorName(name)
+function DataStream:MakeGlobalStream(name : string, schema : {[any] : any})
+    ValidateStreamName(name)
 
-    Replicating.Global[name] = TableReplicatorMeta:MakeTableReplicatorObject(name, schema)
+    Replicating.Global[name] = DataStreamMeta:MakeDataStreamObject(name, schema)
 end
 
-function TableReplicator:GetPlayersWithSchema(name : string) : {Player}
-    local globalReplicator = Replicating.Global[name]
-    if globalReplicator then
+function DataStream:GetPlayersWithSchema(name : string) : {Player}
+    local globalStream = Replicating.Global[name]
+    if globalStream then
         return Players:GetPlayers()
     end
 
-    local playerReplicator = Replicating.Player[name]
-    if not playerReplicator then
+    local playerStream = Replicating.Player[name]
+    if not playerStream then
         error("Attempt to get players in non-existent schema '"..tostring(name).."'")
     end
 
-    local metatable = getmetatable(playerReplicator)
+    local metatable = getmetatable(playerStream)
 
     local toReturn = {}
-    for playerIndex, _ in pairs(metatable._playerReplicatorCache) do
+    for playerIndex, _ in pairs(metatable._playerStreamCache) do
         local player = Players:GetPlayerByUserId(playerIndex)
         if player then
             table.insert(toReturn, player)
@@ -199,18 +199,18 @@ end
 do
     for _, playerSchema in script.Schemas.Player:GetChildren() do
         if playerSchema:IsA("ModuleScript") then
-            TableReplicator:AddPlayerReplicatorTemplate(playerSchema.Name, require(playerSchema))
+            DataStream:AddPlayerStreamTemplate(playerSchema.Name, require(playerSchema))
         end
     end
     for _, globalSchema in script.Schemas.Global:GetChildren() do
         if globalSchema:IsA("ModuleScript") then
-            TableReplicator:MakeGlobalReplicator(globalSchema.Name, require(globalSchema))
+            DataStream:MakeGlobalStream(globalSchema.Name, require(globalSchema))
         end
     end
 
     GetDataFunction.OnServerInvoke = function(player, schemaName)
         local function makeReturnDataFromSchema(schema)
-            local nonStringIndexes, valueForTransport = TableReplicatorMeta:GetNonStringIndexesFromValue(schema:Read())
+            local nonStringIndexes, valueForTransport = DataStreamMeta:GetNonStringIndexesFromValue(schema:Read())
 
             return {
                 Data = valueForTransport,
@@ -220,7 +220,7 @@ do
 
         if not schemaName then
             local toReturn = {}
-            local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
+            local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
 
             for name, schema in pairs(Replicating.Player) do
                 if schema[playerIndex] then
@@ -235,7 +235,7 @@ do
             return toReturn
         else
             if Replicating.Player[schemaName] then
-                local playerIndex = ReplicatorUtils.ResolvePlayerSchemaIndex(player)
+                local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
                 if Replicating.Player[schemaName][playerIndex] then
                     return makeReturnDataFromSchema(Replicating.Player[schemaName][playerIndex])
                 else
@@ -249,7 +249,7 @@ do
 end
 
 --= Return Module =--
-return setmetatable(TableReplicator, {
+return setmetatable(DataStream, {
     __index = function(self, index)
         local replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
         if replicatorTarget then
