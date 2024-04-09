@@ -20,8 +20,8 @@ local ClientDataStream = { }
 
 --= Dependencies =--
 
-local ClientMeta = require(script:WaitForChild("ClientClientDataStreamMeta"))
-local CONFIG = require(script.DataStreamClientConfig)
+local ClientMeta = require(script:WaitForChild("ClientDataStreamMeta"))
+local CONFIG = require(script.ClientDataStreamConfig)
 local DataStreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamRemotes"))
 local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
 

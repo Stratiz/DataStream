@@ -16,7 +16,7 @@ local Players = game:GetService("Players")
 
 --= Dependencies =--
 
-local CONFIG = require(script.Parent.DataStreamServerConfig)
+local CONFIG = require(script.Parent.ServerDataStreamConfig)
 local Signal = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamSignal"))
 local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamUtils"))
 local DataStreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("DataStreamRemotes"))
