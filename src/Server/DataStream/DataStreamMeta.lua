@@ -169,9 +169,9 @@ function TriggerPathChanged(name : string, ownerId : number, path : {string}, va
             local parentSignalData = getmetatable(currentParent)
             if parentSignalData and depth == #path then
                 if value == nil then
-                    parentSignalData.Signal:Fire("ChildRemoved", path[#path])
+                    parentSignalData.Signal:Fire("ChildRemoved", path[#path], oldValue)
                 elseif oldValue == nil then
-                    parentSignalData.Signal:Fire("ChildAdded", path[#path])
+                    parentSignalData.Signal:Fire("ChildAdded", path[#path], value)
                 end
             end
 
@@ -442,9 +442,9 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
             elseif CatcherMeta.LastIndex == "ChildAdded" or CatcherMeta.LastIndex == "ChildRemoved" then
                 local callback = table.pack(...)[1]
 
-                return BindChanged(name, ownerId, truePathTable, function(method, index)
+                return BindChanged(name, ownerId, truePathTable, function(method, index, value)
                     if method == CatcherMeta.LastIndex then
-                        callback(index)
+                        callback(index, value)
                     end
                 end)
             else

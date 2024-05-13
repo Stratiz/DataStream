@@ -47,6 +47,11 @@ local function warn(...)
 end
 
 local function UpdateRoot(rootName : string, data : any)
+	if type(data) ~= "table" then
+		warn("Something tried to set data to a non-table for", rootName, data)
+		return
+	end
+	
 	table.clear(RealData[rootName])
 	for i, v in data do
 		RealData[rootName][i] = v

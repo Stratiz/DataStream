@@ -174,7 +174,7 @@ local DataStream = require(DataStreamModule)
 local globalGameDataStream = DataStream.GameData
 
 local function SetupPlayer(player : Player)
-    local playerStoredStream = DataStream.Stored[olayer]
+    local playerStoredStream = DataStream.Stored[player]
 
     task.spawn(function()
         while player.Parent and task.wait(1) do

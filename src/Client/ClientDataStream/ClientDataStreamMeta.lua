@@ -56,6 +56,10 @@ local function MakeCatcherObject(metaTable)
 end
 
 local function GetValueFromPathTable(rootTable, pathTable) : any?
+    if type(rootTable) ~= "table" then
+        return rootTable
+    end
+    
     local currentTarget = rootTable
     for _, index in pathTable do
         currentTarget = currentTarget[index]
@@ -160,9 +164,9 @@ function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value 
             local parentSignalData = getmetatable(currentParent)
             if parentSignalData and depth == #path then
                 if value == nil then
-                    parentSignalData.Signal:Fire("ChildRemoved", path[#path])
+                    parentSignalData.Signal:Fire("ChildRemoved", path[#path], oldValue)
                 elseif oldValue == nil then
-                    parentSignalData.Signal:Fire("ChildAdded", path[#path])
+                    parentSignalData.Signal:Fire("ChildAdded", path[#path], value)
                 end
             end
 
@@ -249,9 +253,9 @@ function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[st
             elseif CatcherMeta.LastIndex == "ChildAdded" or CatcherMeta.LastIndex == "ChildRemoved" then
                 local callback = table.pack(...)[1]
 
-                return BindChanged(name, truePathTable, function(method, index)
+                return BindChanged(name, truePathTable, function(method, index, value)
                     if method == CatcherMeta.LastIndex then
-                        callback(index)
+                        callback(index, value)
                     end
                 end)
             else
