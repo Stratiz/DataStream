@@ -28,7 +28,6 @@ local DataStreamUtils = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("Dat
 --= Object References =--
 
 local GetDataFunction = DataStreamRemotes:Get("Function", "GetData")
-local DataUpdateEvent = DataStreamRemotes:Get("Event", "DataUpdate")
 
 --= Constants =--
 
@@ -51,7 +50,7 @@ local function UpdateRoot(rootName : string, data : any)
 		warn("Something tried to set data to a non-table for", rootName, data)
 		return
 	end
-	
+
 	table.clear(RealData[rootName])
 	for i, v in data do
 		RealData[rootName][i] = v
@@ -96,7 +95,7 @@ local function UpdateData(name : string, path : {string}, value : any, nonString
 	for Index,NextKey in pairs(PathKeys) do
 		if type(Current) == "table" then
 			if Index >= #PathKeys then
-				oldValue = Current[NextKey]
+				oldValue = DataStreamUtils:DeepCopyTable(Current[NextKey])
 				Current[NextKey] = value
 			elseif Current[NextKey] then
 				Current = Current[NextKey]
@@ -118,19 +117,23 @@ local function UpdateData(name : string, path : {string}, value : any, nonString
 	end
 	if #PathKeys == 0 then
 		UpdateRoot(name, value)
+		oldValue = DataStreamUtils:DeepCopyTable(RealData[name])
 	end
+
 	ClientMeta:PathChanged(name, path, value, oldValue, RealData[name])
 end
 
 --= Initializers =--
 do
 	--// Listen for updates
-	DataUpdateEvent.OnClientEvent:Connect(function(...)
-		if not DidFetch then
-			table.insert(UpdateCache, {...})
-		else
-			UpdateData(...)
-		end
+	DataStreamRemotes:OnDataUpdateEventAdded(function(name : string, event : RemoteEvent)
+		event.OnClientEvent:Connect(function(...)
+			if not DidFetch then
+				table.insert(UpdateCache, {name, ...})
+			else
+				UpdateData(name, ...)
+			end
+		end)
 	end)
 
 	--// Fetch stores from server
@@ -141,7 +144,7 @@ do
 	DidFetch = true
 
 	--// Update data from cache after fetch
-	for _, update in pairs(UpdateCache) do
+	for _, update in ipairs(UpdateCache) do
 		UpdateData(unpack(update))
 	end
 	UpdateCache = {}

@@ -23,8 +23,6 @@ local DataStreamRemotes = require(CONFIG.SHARED_MODULES_LOCATION:WaitForChild("D
 
 --= Object References =--
 
-local DataUpdateEvent = DataStreamRemotes:Get("Event", "DataUpdate")
-
 --= Constants =--
 
 local METHODS = {
@@ -38,6 +36,7 @@ local METHODS = {
 --= Variables =--
 
 local SignalCache = {}
+local ReplicatingToPlayers = {}
 
 --= Internal Functions =--
 
@@ -230,17 +229,27 @@ function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string},
     return nonStringIndexes, newValue
 end
 
+function DataMeta:EnableReplicationForPlayer(player : Player)
+    ReplicatingToPlayers[player] = true
+end
+
 function DataMeta:TriggerReplicate(owner, name, pathTable, value)
     local nonStringIndexes, valueForTransport = self:GetNonStringIndexesFromValue(DataStreamUtils:DeepCopyTable(value))
 
+    local targetEvent = DataStreamRemotes:Get("Event", name)
     if owner then
-        DataUpdateEvent:FireClient(owner, name, pathTable, valueForTransport, nonStringIndexes)
+        if ReplicatingToPlayers[owner] then
+            targetEvent:FireClient(owner, pathTable, valueForTransport, nonStringIndexes)
+        end
     else
-        DataUpdateEvent:FireAllClients(name, pathTable, valueForTransport, nonStringIndexes)
+        targetEvent:FireAllClients(pathTable, valueForTransport, nonStringIndexes)
     end
 end
 
 function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, owner : Player?)
+    -- Create remote event for replication
+    DataStreamRemotes:Get("Event", name)
+
     local function ReplicateData(pathTable : { string }, value : any)
         self:TriggerReplicate(owner, name, pathTable, value)
     end
@@ -459,6 +468,7 @@ end
 
 do
     Players.PlayerRemoving:Connect(function(player)
+        ReplicatingToPlayers[player] = nil
         local TargetIndex = tostring(player.UserId)
         if TargetIndex and SignalCache[TargetIndex] then
             for _, pathSignalData in pairs(SignalCache[TargetIndex]) do

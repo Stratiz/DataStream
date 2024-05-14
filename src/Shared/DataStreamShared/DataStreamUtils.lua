@@ -29,7 +29,7 @@ function DataStreamUtils.StringifyPathTable(pathTable : { any }) : string
     local pathString = ""
 
     for i, value in pairs(pathTable) do
-        pathString = (i == 1 and "." or "").. pathString .. tostring(value)
+        pathString = (i == 1 and "" or ".").. pathString .. tostring(value)
     end
 
     return pathString

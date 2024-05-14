@@ -57,6 +57,7 @@ function DataStreamRemotes:Get(remoteType : "Function" | "Event", name : string)
 
         local NewRemote = Instance.new("Remote"..remoteType)
         NewRemote.Name = internalName
+        NewRemote:SetAttribute("StreamTarget", name)
         NewRemote.Parent = RemoteFolder
 
         RemoteCache[remoteType][name] = NewRemote
@@ -68,6 +69,34 @@ function DataStreamRemotes:Get(remoteType : "Function" | "Event", name : string)
         RemoteCache[remoteType][name] = foundRemote
 
         return foundRemote
+    end
+end
+
+function DataStreamRemotes:OnDataUpdateEventAdded(callback : (name : string, event : RemoteEvent) -> ())
+    if IsServer then
+        error("Cannot call OnDataUpdateEventAdded on the server")
+    end
+
+    local function triggerCallback(child)
+        local streamTarget = child:GetAttribute("StreamTarget")
+        if not streamTarget then
+            warn("RemoteEvent missing StreamTarget attribute!")
+            return
+        end
+
+        callback(streamTarget, child)
+    end
+
+    RemoteFolder.ChildAdded:Connect(function(child)
+        if child:IsA("RemoteEvent") then
+            triggerCallback(child)
+        end
+    end)
+
+    for _, remote in ipairs(RemoteFolder:GetChildren()) do
+        if remote:IsA("RemoteEvent") then
+            triggerCallback(remote)
+        end
     end
 end
 

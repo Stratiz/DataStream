@@ -73,19 +73,16 @@ local function CreatePlayerStreamCatcher(name)
         end
     end
 
-    metatable.__newindex = function(self,Index,Value)
-        local targetIndex = DataStreamUtils.ResolvePlayerSchemaIndex(Index)
-        local targetPlayer = Players:GetPlayerByUserId(targetIndex)
-        checkForRegister(Index)
+    metatable.__newindex = function(self, index, value)
+        local targetIndex = DataStreamUtils.ResolvePlayerSchemaIndex(index)
+        checkForRegister(index)
 
-        if targetPlayer then
-            playerDataStreamCache[targetIndex] = Value
-            if Value == nil then
-                DataStreamMeta:TriggerReplicate(targetPlayer, name, {}, Value)
-            end
+        if playerDataStreamCache[targetIndex] then
+            playerDataStreamCache[targetIndex]:Write(value)
         else
-            warn("Player not found for index: " .. targetIndex)
+            error("Player does not have schema '"..name.."'")
         end
+        
         return self
     end
     
@@ -104,6 +101,19 @@ local function CreatePlayerStreamCatcher(name)
     metatable._playerStreamCache = playerDataStreamCache
 
     return proxy
+end
+
+local function SetStreamObjectToPlayer(schemaName, player, value)
+    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
+    local target = Replicating.Player[schemaName]
+    if target and playerIndex then
+        local targetMeta = getmetatable(target)
+
+        targetMeta._playerStreamCache[playerIndex] = value
+        if value == nil then
+            DataStreamUtils:TriggerReplicate(player, schemaName, {}, value)
+        end
+    end
 end
 
 --= API Functions =--
@@ -141,9 +151,8 @@ function DataStream:MakeStreamForPlayer(name : string, player : Player, schema :
     end
     RegisteredPlayers[player][name] = true
 
-    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
     local newDataStream = DataStreamMeta:MakeDataStreamObject(name, schema, player)
-    Replicating.Player[name][playerIndex] = newDataStream
+    SetStreamObjectToPlayer(name, player, newDataStream)
 
     DataStream.PlayerStreamAdded:Fire(name, player)
 
@@ -152,16 +161,15 @@ end
 
 -- Removes a schema from a specific player
 function DataStream:RemoveStreamForPlayer(name : string, player : Player)
-    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
-
     DataStream.PlayerStreamRemoving:Fire(name, player)
 
     if RegisteredPlayers[player] then
         RegisteredPlayers[player][name] = nil
     end
 
+    --TODO: new deffered signals might make this a race condition.
     task.defer(function()
-        Replicating.Player[name][playerIndex] = nil
+        SetStreamObjectToPlayer(name, player, nil)
     end)
 end
 
@@ -209,6 +217,7 @@ do
     end
 
     GetDataFunction.OnServerInvoke = function(player, schemaName)
+        DataStreamMeta:EnableReplicationForPlayer(player)
         local function makeReturnDataFromSchema(schema)
             local nonStringIndexes, valueForTransport = DataStreamMeta:GetNonStringIndexesFromValue(schema:Read())
 
@@ -257,5 +266,15 @@ return setmetatable(DataStream, {
         else
             error("Attempt to index non-existent schema '"..tostring(index).."'")
         end
+    end,
+    __newindex = function(self, index, value)
+        local replicatorTarget = Replicating.Global[index]
+        if replicatorTarget then
+            replicatorTarget:Write(value)
+        else
+            error("Attempt to index non-existent schema '"..tostring(index).."'")
+        end
+
+        return self
     end
 })
