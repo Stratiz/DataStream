@@ -111,7 +111,7 @@ local function SetStreamObjectToPlayer(schemaName, player, value)
 
         targetMeta._playerStreamCache[playerIndex] = value
         if value == nil then
-            DataStreamUtils:TriggerReplicate(player, schemaName, {}, value)
+            DataStreamMeta:TriggerReplicate(player, schemaName, {}, value)
         end
     end
 end

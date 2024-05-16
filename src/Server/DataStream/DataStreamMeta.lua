@@ -469,17 +469,21 @@ end
 do
     Players.PlayerRemoving:Connect(function(player)
         ReplicatingToPlayers[player] = nil
-        local TargetIndex = tostring(player.UserId)
-        if TargetIndex and SignalCache[TargetIndex] then
-            for _, pathSignalData in pairs(SignalCache[TargetIndex]) do
-                for _, data in pairs(pathSignalData) do
-                    data.Signal:Destroy()
-                    for _, connection in pairs(data.Connections) do
-                        connection:Disconnect()
+        for _, owners in pairs(SignalCache) do
+            local targetOwner = tostring(player.UserId)
+            if owners[targetOwner] then
+                local function recurse(signalTable : {[string] : {}})
+                    local metaData = getmetatable(signalTable)
+                    if metaData and metaData.Signal then
+                        metaData.Signal:Destroy()
+                    end
+                    for _, child in pairs(signalTable) do
+                        recurse(child)
                     end
                 end
+                recurse(owners[targetOwner])
+                owners[targetOwner] = nil
             end
-            SignalCache[TargetIndex] = nil
         end
     end)
 end
