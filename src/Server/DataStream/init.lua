@@ -140,7 +140,10 @@ end
 
 -- Adds a schema to a specific player
 function DataStream:MakeStreamForPlayer(name : string, player : Player, schema : {[any] : any})
-    
+    if RegisteredPlayers[player] and RegisteredPlayers[player][name] then
+        return
+    end
+
     if not Replicating.Player[name] then
         ValidateStreamName(name)
         Replicating.Player[name] = CreatePlayerStreamCatcher(name)
