@@ -52,7 +52,7 @@ local function ValidateStreamName(name : string)
     if Replicating.Global[name] or Replicating.Player[name] then
         error("Schema already exists with name: " .. name)
     end
-    if DataStream[name] then
+    if rawget(DataStream, name) then
         error("Schema cannot have the same name as a module method: " .. name)
     end
 end
@@ -132,9 +132,11 @@ function DataStream:AddPlayerStreamTemplate(name : string, schema : {[any] : any
         self:MakeStreamForPlayer(name, player, DataStreamUtils:DeepCopyTable(schema))
     end)
 
-    Players.PlayerRemoving:Connect(function(player)
-        RegisteredPlayers[player] = nil
-        self:RemoveStreamForPlayer(name, player)
+    Players.ChildRemoved:Connect(function(player)
+        if player:IsA("Player") then
+            RegisteredPlayers[player] = nil
+            self:RemoveStreamForPlayer(name, player)
+        end
     end)
 end
 
