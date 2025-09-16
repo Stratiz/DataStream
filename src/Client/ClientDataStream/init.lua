@@ -62,14 +62,19 @@ local function FixValueIndexes(value : any, nonStringIndexesInValue : {{ Path : 
 		return
 	end
 
+	local toClear = {}
 	for _, nonStringIndex in nonStringIndexesInValue do
 		local pathKeys = nonStringIndex.Path
 		local current = value
 		for index, nextKey in pairs(pathKeys) do
 			if type(current) == "table" then
 				if index >= #pathKeys then
+					if nonStringIndex.IndexValue == nil then
+						warn("Fix path is nil | " .. DataStreamUtils.StringifyPathTable(pathKeys))
+						continue
+					end
 					current[nonStringIndex.IndexValue] = current[nextKey]
-					current[nextKey] = nil
+					table.insert(toClear, {current, nextKey})
 				elseif current[nextKey] then
 					current = current[nextKey]
 				else
@@ -80,11 +85,20 @@ local function FixValueIndexes(value : any, nonStringIndexesInValue : {{ Path : 
 			end
 		end
 	end
+
+	for _, clear in pairs(toClear) do
+		local current, nextKey = clear[1], clear[2]
+		if current[nextKey] then
+			current[nextKey] = nil
+		else
+			warn("Tried to clear a non-existing key |", nextKey)
+		end
+	end
 end
 
 local function UpdateData(name : string, path : {string}, value : any, nonStringIndexesInValue : {{ Path : {string}, IndexValue : any }})
 	FixValueIndexes(value, nonStringIndexesInValue)
-	
+
 	if not RealData[name] then
 		RealData[name] = {}
 	end
