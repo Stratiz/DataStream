@@ -1,0 +1,16 @@
+{
+  "name": "DataStream",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "packages": {
+        "$className": "Folder",
+        "DataStream" : {
+          "$path": "src"
+        }
+      }
+    }
+  }
+}

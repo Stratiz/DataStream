@@ -169,7 +169,7 @@ print(DataStream.SchemaName.NewArray:Read()) --> { "a" }
 ```lua
 -- Server
 local Players = game:GetService("Players")
-local DataStream = require(DataStreamModule)
+local DataStream = require(ReplicatedStorage.DataStream).Server
 
 local globalGameDataStream = DataStream.GameData
 
@@ -187,7 +187,7 @@ end
 
 -- Client
 
-local DataStreamClient = require(DataStreamClientModule)
+local DataStreamClient = require(ReplicatedStorage.DataStream).Client
 
 DataStreamClient.Stored.PlaytimeSeconds:Changed(function(seconds : number)
     print("Current player seconds:", seconds)
@@ -200,7 +200,7 @@ end)
 ```lua
 -- Server
 local Players = game:GetService("Players")
-local DataStream = require(DataStreamModule)
+local DataStream = require(ReplicatedStorage.DataStream).Server
 
 local globalGameDataStream = DataStream.GameData
 
@@ -218,7 +218,7 @@ end
 
 -- Client
 
-local DataStreamClient = require(DataStreamClientModule)
+local DataStreamClient = require(ReplicatedStorage.DataStream).Client
 
 local LocalPlayer = game.Players.LocalPlayer
 local PlayerInGameStream = DataStreamClient.GameData.PlayersInGame
@@ -230,14 +230,5 @@ end
 
 ## Installation
 
-There are three folders:
-
-1. Move folders
-   - `src/Server` content should go in `ServerScriptService`
-   - `src/Client` content should go in `StarterPlayerScripts`
-   - `src/Shared` content should go in `ReplicatedStorage`
-  
-
-2. Edit `ServerDataStreamConfig.lua` and change `SHARED_MODULES_LOCATION` to the location of `DataStreamShared` folder.
-3. Edit `ClientDataStreamConfig.lua` and change `SHARED_MODULES_LOCATION` to the location of `DataStreamShared` folder.
-4. Done! the only two modules you should ever need to access are `DataStream` on the server and `ClientDataStream` on the client.
+DataStream is available on the Forest Package Manager:
+**https://forest.dev/p/roblox/stratiz/datastream**
