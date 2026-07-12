@@ -33,6 +33,19 @@ local METHODS = {
     Write = true
 }
 
+--= Types =--
+type DataStreamMethodObject = {
+    Read : (self : any) -> any,
+    Write : (self : any, value : any) -> (),
+    ChildAdded : (self : any, callback : (index : any, value : any) -> ()) -> RBXScriptConnection,
+    ChildRemoved : (self : any, callback : (index : any, value : any) -> ()) -> RBXScriptConnection,
+    Changed : (self : any, callback : (newValue : any, oldValue : any) -> ()) -> RBXScriptConnection,
+}
+
+type DataStreamObject = DataStreamMethodObject & {
+    [any] : DataStreamObject,
+}
+
 --= Variables =--
 
 local SignalCache = {}
@@ -246,7 +259,7 @@ function DataMeta:TriggerReplicate(owner, name, pathTable, value)
     end
 end
 
-function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, owner : Player?)
+function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, owner : Player?) : DataStreamObject
     -- Create remote event for replication
     DataStreamRemotes:Get("Event", name)
 

@@ -36,11 +36,7 @@ function DataStreamUtils.StringifyPathTable(pathTable : { any }) : string
 end
 
 function DataStreamUtils.CopyTable(target)
-	local new = {}
-	for key, value in pairs(target) do
-		new[key] = value
-	end
-	return new
+	return table.clone(target)
 end
 
 function DataStreamUtils:DeepCopyTable(target, _context)

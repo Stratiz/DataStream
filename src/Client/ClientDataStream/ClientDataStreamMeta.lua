@@ -31,6 +31,19 @@ local METHODS = {
     Changed = true
 }
 
+--= Types =--
+type ClientDataStreamMethodObject = {
+    Read : (self : any) -> any,
+    Write : (self : any, value : any) -> (),
+    ChildAdded : (self : any, callback : (index : any, value : any) -> ()) -> RBXScriptConnection,
+    ChildRemoved : (self : any, callback : (index : any, value : any) -> ()) -> RBXScriptConnection,
+    Changed : (self : any, callback : (newValue : any, oldValue : any) -> ()) -> RBXScriptConnection,
+}
+
+type ClientDataStreamObject = ClientDataStreamMethodObject & {
+    [any] : ClientDataStreamObject,
+}
+
 --= Variables =--
 
 local SignalCache = {}
@@ -186,7 +199,7 @@ function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value 
     end
 end
 
-function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[string | number] : any})
+function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[string | number] : any}) : ClientDataStreamObject
 
     local RootCatcherMeta
     RootCatcherMeta = {

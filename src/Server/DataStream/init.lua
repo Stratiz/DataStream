@@ -172,9 +172,19 @@ function DataStream:RemoveStreamForPlayer(name : string, player : Player)
         RegisteredPlayers[player][name] = nil
     end
 
-    --TODO: new deffered signals might make this a race condition.
+    -- Capture the exact stream we're removing. If the same UserId rejoins before this deferred
+    -- cleanup runs, MakeStreamForPlayer will have already replaced this cache entry with a fresh
+    -- stream. Clearing it anyway would leave the rejoining player with no schema (GetData returns
+    -- nothing for it and the client errors indexing the nil root), so only clear the cache when it
+    -- still holds the stream we set out to remove.
+    local target = Replicating.Player[name]
+    local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
+    local removingStream = if target and playerIndex then getmetatable(target)._playerStreamCache[playerIndex] else nil
+
     task.defer(function()
-        SetStreamObjectToPlayer(name, player, nil)
+        if removingStream and getmetatable(target)._playerStreamCache[playerIndex] == removingStream then
+            SetStreamObjectToPlayer(name, player, nil)
+        end
     end)
 end
 
