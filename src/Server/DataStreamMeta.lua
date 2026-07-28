@@ -16,9 +16,10 @@ local Players = game:GetService("Players")
 
 --= Dependencies =--
 
-local Signal = require(script.Parent.Parent.Shared:WaitForChild("DataStreamSignal"))
+local Signal = require(script.Parent.Parent:WaitForChild("Packages"):WaitForChild("Signal"))
 local DataStreamUtils = require(script.Parent.Parent.Shared:WaitForChild("DataStreamUtils"))
 local DataStreamRemotes = require(script.Parent.Parent.Shared:WaitForChild("DataStreamRemotes"))
+local DataStreamInstanceRefs = require(script.Parent.Parent.Shared:WaitForChild("DataStreamInstanceRefs"))
 
 --= Object References =--
 
@@ -101,8 +102,7 @@ local function BindChanged(name, ownerId, pathTable, callback)
 end
 
 local function MakeCatcherObject(oldMetaTable)
-    local metaTable = DataStreamUtils:DeepCopyTable(oldMetaTable)
-    metaTable.LastTable = oldMetaTable.LastTable
+    local metaTable = DataStreamUtils.CopyTable(oldMetaTable)
 
     local NewObject = newproxy(true)
     local ObjectMetaTable = getmetatable(NewObject)
@@ -205,40 +205,109 @@ end
 
 --= API Functions =--
 
-function DataMeta:GetNonStringIndexesFromValue(value : any) : {{Path : {string}, IndexValue : any}}
-    local nonStringIndexes = {} -- Keep track of non-string indexes to fix them later after remote event encoding
-    
-    local function checkNonStringIndex(targetValue, targetPathTable)
-        if type(targetValue) == "table" then
-            local newTargetValue = {}
-            for index, child in pairs(targetValue) do
+-- Rebuilds a value into a remote-safe transport table plus a repair list the
+-- client applies after deserialization. Repair kinds:
+--   "Index"         -> non-string, non-Instance key moved to a unique placeholder
+--   "InstanceKey"   -> Instance key moved to a unique placeholder ("\0I:" .. refId),
+--                      so two same-named instances can never collide
+--   "InstanceValue" -> Instance value stripped from the transport table; the repair
+--                      entry is the source of truth (its Instance field arrives nil
+--                      on the client iff the instance hasn't replicated yet, and the
+--                      ref id lets the client resolve it later)
+-- Dense arrays keep their numeric keys as-is (the serializer handles them
+-- faithfully), so they don't generate per-element repair entries.
+function DataMeta:PrepareValueForTransport(value : any) : ({{[string] : any}}, any)
+    local repairs = {}
+    local placeholderCounter = 0
+
+    local function isDenseArray(targetValue : {[any] : any}) : boolean
+        local arrayLength = #targetValue
+        local keyCount = 0
+        for index in pairs(targetValue) do
+            keyCount += 1
+            if type(index) ~= "number" or index % 1 ~= 0 or index < 1 or index > arrayLength then
+                return false
+            end
+        end
+        return keyCount == arrayLength
+    end
+
+    local function walk(targetValue, targetPathTable)
+        if typeof(targetValue) == "Instance" then
+            table.insert(repairs, {
+                Kind = "InstanceValue",
+                Path = table.clone(targetPathTable),
+                Id = DataStreamInstanceRefs:GetId(targetValue),
+                Instance = targetValue,
+            })
+            return nil
+        elseif type(targetValue) ~= "table" then
+            return targetValue
+        end
+
+        local newTargetValue = {}
+
+        if isDenseArray(targetValue) then
+            for index, child in ipairs(targetValue) do
                 local newPathTable = table.clone(targetPathTable)
-                if type(index) ~= "string" then
-                    local indexAsString = tostring(index)
-
-                    while targetValue[indexAsString] do
-                        indexAsString ..= "_"
-                    end
-
-                    table.insert(newPathTable, indexAsString)
-                    table.insert(nonStringIndexes, {
-                        Path = newPathTable,
-                        IndexValue = index
-                    })
-
-                    newTargetValue[indexAsString] = checkNonStringIndex(child, newPathTable)
-                else
-                    table.insert(newPathTable, index)
-                    newTargetValue[index] = checkNonStringIndex(child, newPathTable)
-                end
+                table.insert(newPathTable, index)
+                newTargetValue[index] = walk(child, newPathTable)
             end
             return newTargetValue
         end
-        return targetValue
+
+        for index, child in pairs(targetValue) do
+            local newPathTable = table.clone(targetPathTable)
+
+            if type(index) == "string" then
+                table.insert(newPathTable, index)
+                newTargetValue[index] = walk(child, newPathTable)
+            elseif typeof(index) == "Instance" then
+                local refId = DataStreamInstanceRefs:GetId(index)
+                local placeholder = "\0I:" .. refId
+
+                table.insert(newPathTable, placeholder)
+                table.insert(repairs, {
+                    Kind = "InstanceKey",
+                    Path = newPathTable,
+                    Id = refId,
+                    Instance = index,
+                })
+                newTargetValue[placeholder] = walk(child, newPathTable)
+            else
+                placeholderCounter += 1
+                local placeholder = "\0K:" .. placeholderCounter
+
+                table.insert(newPathTable, placeholder)
+                table.insert(repairs, {
+                    Kind = "Index",
+                    Path = newPathTable,
+                    IndexValue = index,
+                })
+                newTargetValue[placeholder] = walk(child, newPathTable)
+            end
+        end
+        return newTargetValue
     end
 
-    local newValue = checkNonStringIndex(value, {})
-    return nonStringIndexes, newValue
+    local newValue = walk(value, {})
+    return repairs, newValue
+end
+
+-- Path fragments can themselves be Instance keys (a write nested under an
+-- instance-keyed entry). Encode those so the client can resolve them by ref id
+-- instead of receiving a bare nil for unreplicated instances.
+local function EncodePathForTransport(pathTable : {any}) : {any}
+    local encoded = table.clone(pathTable)
+    for index, fragment in encoded do
+        if typeof(fragment) == "Instance" then
+            encoded[index] = {
+                __dsRefId = DataStreamInstanceRefs:GetId(fragment),
+                Instance = fragment,
+            }
+        end
+    end
+    return encoded
 end
 
 function DataMeta:EnableReplicationForPlayer(player : Player)
@@ -246,19 +315,25 @@ function DataMeta:EnableReplicationForPlayer(player : Player)
 end
 
 function DataMeta:TriggerReplicate(owner, name, pathTable, value)
-    local nonStringIndexes, valueForTransport = self:GetNonStringIndexesFromValue(DataStreamUtils:DeepCopyTable(value))
+    local repairs, valueForTransport = self:PrepareValueForTransport(value)
+    local pathForTransport = EncodePathForTransport(pathTable)
 
     local targetEvent = DataStreamRemotes:Get("Event", name)
     if owner then
         if ReplicatingToPlayers[owner] then
-            targetEvent:FireClient(owner, pathTable, valueForTransport, nonStringIndexes)
+            targetEvent:FireClient(owner, pathForTransport, valueForTransport, repairs)
         end
     else
-        targetEvent:FireAllClients(pathTable, valueForTransport, nonStringIndexes)
+        targetEvent:FireAllClients(pathForTransport, valueForTransport, repairs)
     end
 end
 
-function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, owner : Player?) : DataStreamObject
+function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, owner : Player?) : DataStreamObject
+    -- The stream owns an immutable copy of the schema: the root table stays
+    -- unfrozen (its identity is captured in the closures below), everything
+    -- beneath it is frozen and replaced copy-on-write.
+    local rawData = DataStreamUtils.FreezeChildren(DataStreamUtils:DeepCopyTable(schema))
+
     -- Create remote event for replication
     DataStreamRemotes:Get("Event", name)
 
@@ -266,32 +341,24 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
         self:TriggerReplicate(owner, name, pathTable, value)
     end
 
+    -- Value must already be frozen (ingested) if it is a table.
     local function SetValueFromPath(pathTable : {string}, Value)
         if pathTable == nil or #pathTable <= 0 then
-            local OldValue = DataStreamUtils:DeepCopyTable(rawData)
+            local OldValue = table.freeze(table.clone(rawData))
 
             table.clear(rawData)
             for key, newValue in Value do
                 rawData[key] = newValue
-            end 
+            end
 
             return OldValue
         else
-            local LastStep = rawData
-            for Index, PathFragment in ipairs(pathTable or {}) do
-                if LastStep then
-                    if Index == #pathTable then
-                        local OldValue = LastStep[PathFragment]
-                        LastStep[PathFragment] = Value
-                        return OldValue
-                    else
-                        LastStep = LastStep[PathFragment]
-                    end
-                else
-                    warn("Last step is nil", pathTable, PathFragment)
-                    return Value
-                end
+            local didSet, OldValue = DataStreamUtils.SetValueAtPath(rawData, pathTable, Value)
+            if not didSet then
+                warn("Last step is nil", pathTable)
+                return nil
             end
+            return OldValue
         end
     end
 
@@ -310,7 +377,6 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
     local RootCatcherMeta
     RootCatcherMeta = {
         PathTable = {},
-        LastTable = rawData,
         LastIndex = nil,
         ValueType = type(rawData),
         MethodLocked = false,
@@ -348,9 +414,6 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
             end
 
             NextMetaTable.LastIndex = NextIndex
-            if not NextMetaTable.MethodLocked then
-                NextMetaTable.LastTable = previousValue
-            end
 
             return MakeCatcherObject(NextMetaTable)
         end,
@@ -360,25 +423,20 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
             local NextMetaTable = DataStreamUtils.CopyTable(CatcherMeta)
             NextMetaTable.PathTable = table.clone(CatcherMeta.PathTable)
 
-            local OldValue = nil
-            if NextMetaTable.FinalIndex then
-                OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
-                NextMetaTable.LastTable[NextMetaTable.FinalIndex] = Value
-            else
-                table.insert(NextMetaTable.PathTable, NextIndex)
-                OldValue = SetValueFromPath(NextMetaTable.PathTable, DataStreamUtils:DeepCopyTable(Value))
-            end
+            table.insert(NextMetaTable.PathTable, NextIndex)
+            local frozenValue = DataStreamUtils.DeepCopyAndFreeze(Value)
+            local OldValue = SetValueFromPath(NextMetaTable.PathTable, frozenValue)
 
-            internalChangedTrigger(NextMetaTable,OldValue,Value, false)
+            internalChangedTrigger(NextMetaTable, OldValue, frozenValue, false)
 
-            ReplicateData(NextMetaTable.PathTable, Value)
+            ReplicateData(NextMetaTable.PathTable, frozenValue)
             return MakeCatcherObject(NextMetaTable)
         end,
         -- Support for +=, -=, *=, /=
         __add = function(dataObject, Value)
             local catcherMeta = getmetatable(dataObject)
             if catcherMeta.ValueType == "number" then
-                return catcherMeta.LastTable[catcherMeta.LastIndex] + Value
+                return GetValueFromPathTable(rawData, catcherMeta.PathTable) + Value
             else
                 error("Attempted to perform '+' (Addition) on " .. catcherMeta.ValueType, 2)
             end
@@ -386,7 +444,7 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
         __sub = function(dataObject, Value)
             local catcherMeta = getmetatable(dataObject)
             if catcherMeta.ValueType == "number" then
-                return catcherMeta.LastTable[catcherMeta.LastIndex] - Value
+                return GetValueFromPathTable(rawData, catcherMeta.PathTable) - Value
             else
                 error("Attempted to perform '-' (Subtraction) on " .. catcherMeta.ValueType, 2)
             end
@@ -394,7 +452,7 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
         __mul = function(dataObject, Value)
             local catcherMeta = getmetatable(dataObject)
             if catcherMeta.ValueType == "number" then
-                return catcherMeta.LastTable[catcherMeta.LastIndex] * Value
+                return GetValueFromPathTable(rawData, catcherMeta.PathTable) * Value
             else
                 error("Attempted to perform '*' (Multiplication) on " .. catcherMeta.ValueType, 2)
             end
@@ -402,7 +460,7 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
         __div = function(dataObject, Value)
             local catcherMeta = getmetatable(dataObject)
             if catcherMeta.ValueType == "number" then
-                return catcherMeta.LastTable[catcherMeta.LastIndex] / Value
+                return GetValueFromPathTable(rawData, catcherMeta.PathTable) / Value
             else
                 error("Attempted to perform '/' (Division) on " .. catcherMeta.ValueType, 2)
             end
@@ -418,40 +476,42 @@ function DataMeta:MakeDataStreamObject(name : string, rawData : {[any] : any}, o
                     warn("You should be calling Read() with : instead of .")
                 end
 
-                return DataStreamUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
+                if #truePathTable == 0 then
+                    -- The root is unfrozen (children are frozen), so hand out a frozen shallow clone.
+                    return table.freeze(table.clone(rawData))
+                end
+                return GetValueFromPathTable(rawData, truePathTable)
             elseif CatcherMeta.LastIndex == "Write" then
                 local value = table.pack(...)[1]
 
-                local NextMetaTable = CatcherMeta
-                local OldValue = nil
-                if NextMetaTable.FinalIndex then
-                    OldValue = NextMetaTable.LastTable[NextMetaTable.FinalIndex]
-                    NextMetaTable.LastTable[NextMetaTable.FinalIndex] = value
-                else
-                    OldValue = SetValueFromPath(truePathTable, DataStreamUtils:DeepCopyTable(value))
+                local frozenValue = DataStreamUtils.DeepCopyAndFreeze(value)
+                local OldValue = SetValueFromPath(truePathTable, frozenValue)
+
+                internalChangedTrigger(CatcherMeta, OldValue, frozenValue, true)
+
+                ReplicateData(truePathTable, frozenValue)
+            elseif CatcherMeta.LastIndex == "Insert" or CatcherMeta.LastIndex == "Remove" then
+                local currentTable = if #truePathTable == 0 then rawData else GetValueFromPathTable(rawData, truePathTable)
+                if type(currentTable) ~= "table" then
+                    error("Attempted to " .. CatcherMeta.LastIndex:lower() .. " a value on a non-table value.")
                 end
 
-                internalChangedTrigger(NextMetaTable, OldValue, value, true)
+                local newTable = table.clone(currentTable)
+                if CatcherMeta.LastIndex == "Insert" then
+                    local packedArgs = table.pack(...)
+                    if packedArgs.n >= 2 then
+                        table.insert(newTable, packedArgs[1], DataStreamUtils.DeepCopyAndFreeze(packedArgs[2]))
+                    else
+                        table.insert(newTable, DataStreamUtils.DeepCopyAndFreeze(packedArgs[1]))
+                    end
+                else
+                    table.remove(newTable, ...)
+                end
+                table.freeze(newTable)
 
-                ReplicateData(truePathTable, value)
-            elseif CatcherMeta.LastIndex == "Insert" then
-                if CatcherMeta.FinalIndex then
-                    error("Attempted to insert a value into a non-table value.")
-                else
-                    local OldTable = DataStreamUtils:DeepCopyTable(CatcherMeta.LastTable)
-                    table.insert(CatcherMeta.LastTable, ...)
-                    internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
-                    ReplicateData(truePathTable, CatcherMeta.LastTable)
-                end
-            elseif CatcherMeta.LastIndex == "Remove" then
-                if CatcherMeta.FinalIndex then
-                    error("Attempted to remove a value from a non-table value.")
-                else
-                    local OldTable = DataStreamUtils:DeepCopyTable(CatcherMeta.LastTable)
-                    table.remove(CatcherMeta.LastTable, ...)
-                    internalChangedTrigger(CatcherMeta, OldTable, CatcherMeta.LastTable, true)
-                    ReplicateData(truePathTable, CatcherMeta.LastTable)
-                end
+                local OldTable = SetValueFromPath(truePathTable, newTable)
+                internalChangedTrigger(CatcherMeta, OldTable, newTable, true)
+                ReplicateData(truePathTable, newTable)
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 

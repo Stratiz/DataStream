@@ -17,7 +17,7 @@ local ClientDataStreamMeta = { }
 --= Dependencies =--
 
 local DataStreamUtils = require(script.Parent.Parent.Shared:WaitForChild("DataStreamUtils"))
-local Signal = require(script.Parent.Parent.Shared:WaitForChild("DataStreamSignal"))
+local Signal = require(script.Parent.Parent:WaitForChild("Packages"):WaitForChild("Signal"))
 
 --= Object References =--
 
@@ -203,7 +203,6 @@ function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[st
     local RootCatcherMeta
     RootCatcherMeta = {
         PathTable = {},
-        LastTable = rawData,
         LastIndex = nil,
         MethodLocked = false,
         --// Meta table made to catch and replicate changes
@@ -253,7 +252,11 @@ function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[st
                     warn("You should be calling Read() with : instead of .")
                 end
 
-                return DataStreamUtils:DeepCopyTable(GetValueFromPathTable(rawData, truePathTable))
+                if #truePathTable == 0 then
+                    -- The root is unfrozen (children are frozen), so hand out a frozen shallow clone.
+                    return table.freeze(table.clone(rawData))
+                end
+                return GetValueFromPathTable(rawData, truePathTable)
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 

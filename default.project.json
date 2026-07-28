@@ -8,7 +8,10 @@
       "packages": {
         "$className": "Folder",
         "DataStream" : {
-          "$path": "src"
+          "$path": "src",
+          "Packages" : {
+            "$path": "Packages"
+          }
         }
       }
     }

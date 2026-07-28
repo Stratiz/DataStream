@@ -1,10 +1,12 @@
 {
   "author": "stratiz",
-  "dependencies": {},
+  "dependencies": {
+    "stratiz/Signal": "^1.0.0"
+  },
   "description": "A real-time data replication solution",
   "license": "MIT",
   "name": "datastream",
   "platform": "roblox",
   "root": "src\\init.luau",
-  "version": "1.0.0"
+  "version": "2.0.0"
 }

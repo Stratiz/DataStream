@@ -1,3 +1,0 @@
-return {
-    PlotInstance = nil
-}

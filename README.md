@@ -2,16 +2,31 @@
 
 DataStream is a intuitive ReplicaService alternative. All schemas are replicated in real time (no loops!) between the client and server with no need to call obnoxious methods.
 
-DataStreams can be used for anything from PlayerData to NPC data replication. As long as its an instance that exists on the client and server, it can be replicated!
+DataStreams can be used for anything from PlayerData to NPC data replication. You can even put Instances in your data as values or even as table keys! If an instance hasn't replicated to a client yet (StreamingEnabled), DataStream tracks it and links it up automatically once it arrives, even if it streams out and back in.
 
 Recommended for use with projects that use external editors such as VSCode
 
+## Immutability
+
+No more deep copies! Everything you get out of a stream is frozen (`table.freeze`), so reading data is basically free. If you try to modify a table you read, it'll error instead of silently desyncing your data from the server. If you want to modify it, just clone it:
+
+```lua
+local stats = DataStream.GameData.Stats:Read()
+stats.TotalDeaths += 1 -- ERROR: attempt to modify a readonly table
+
+local mutable = table.clone(stats) -- clone it if you need your own copy
+```
+
+As a bonus, since writes swap tables out instead of modifying them, anything you `:Read()` is a snapshot that will never change out from under you, even after later writes to the same path.
+
 ## Table of Contents
 - [DataStream](#datastream)
+  - [Immutability](#immutability)
   - [Table of Contents](#table-of-contents)
   - [Schemas](#schemas)
     - [Global:](#global)
     - [Player:](#player)
+    - [Registering schemas](#registering-schemas)
   - [Methods `DataStreamObject`](#methods-datastreamobject)
     - [**:Read()**](#read)
     - [**:Write()**](#write)
@@ -65,6 +80,24 @@ return { --Schemas/Player/Stored.lua
     PlaytimeSeconds = 0
 }
 ```
+
+### Registering schemas
+
+No special folders needed — just require DataStream from a server script and add the stream itself via the methods:
+
+```lua
+-- Server
+local DataStream = require(ReplicatedStorage.DataStream).Server
+
+DataStream:MakeGlobalStream("GameData", require(script.Schemas.GameData))
+DataStream:AddPlayerStreamTemplate("Stored", require(script.Schemas.Stored))
+```
+
+The only rule: register your streams as soon as your script runs, with no yields before the registration calls (no `task.wait`, no `WaitForChild`, etc).
+
+You don't need to worry about script load order. If a script indexes a stream that hasn't been registered yet, DataStream simply waits for the next threads to run so the stream has a chance to load and warns after 5 seconds if it still isn't found (just like `WaitForChild`). This works the same way on the client.
+
+Registering a stream late (after players are already in game) is also fine: DataStream will push the stream's data to connected clients when it's registered.
 
 
 ## Methods `DataStreamObject`

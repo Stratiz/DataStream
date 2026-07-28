@@ -27,7 +27,7 @@ local Players = game:GetService("Players")
 --= Dependencies =--
 
 local DataStreamMeta = require(script:WaitForChild("DataStreamMeta"))
-local Signal = require(script.Parent.Shared:WaitForChild("DataStreamSignal"))
+local Signal = require(script.Parent:WaitForChild("Packages"):WaitForChild("Signal"))
 local DataStreamUtils = require(script.Parent.Shared:WaitForChild("DataStreamUtils"))
 local StreamRemotes = require(script.Parent.Shared:WaitForChild("DataStreamRemotes"))
 
@@ -44,6 +44,10 @@ local Replicating = {
 }
 local RegisteredPlayers = {}
 local SchemaCache = {}
+
+--= Constants =--
+
+local SCHEMA_WAIT_WARN_SECONDS = 5
 
 --= Internal Functions =--
 
@@ -67,7 +71,8 @@ local function CreatePlayerStreamCatcher(name)
 
         if targetPlayer then
             if not RegisteredPlayers[targetPlayer] or RegisteredPlayers[targetPlayer][name] == nil then
-                DataStream:MakeStreamForPlayer(name, targetPlayer, DataStreamUtils:DeepCopyTable(SchemaCache[name]))
+                -- MakeDataStreamObject deep-copies the schema, so the template can be passed directly.
+                DataStream:MakeStreamForPlayer(name, targetPlayer, SchemaCache[name])
             end
         end
     end
@@ -102,6 +107,33 @@ local function CreatePlayerStreamCatcher(name)
     return proxy
 end
 
+-- Streams are registered by whatever server script requires DataStream and calls
+-- MakeGlobalStream/AddPlayerStreamTemplate (synchronously, before any yields).
+-- Other scripts may index a schema before the registering script has run, so an
+-- unknown schema yields until it appears instead of erroring — WaitForChild-style,
+-- warning if it takes suspiciously long (e.g. a typo'd schema name).
+local function WaitForSchema(index : string)
+    local replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
+    if replicatorTarget then
+        return replicatorTarget
+    end
+
+    local startTime = os.clock()
+    local warned = false
+    repeat
+        task.wait()
+        replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
+
+        if not replicatorTarget and not warned and os.clock() - startTime >= SCHEMA_WAIT_WARN_SECONDS then
+            warned = true
+            warn("Infinite yield possible waiting for schema '" .. tostring(index)
+                .. "'. Register it with MakeGlobalStream or AddPlayerStreamTemplate on a server script without yielding.")
+        end
+    until replicatorTarget
+
+    return replicatorTarget
+end
+
 local function SetStreamObjectToPlayer(schemaName, player, value)
     local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
     local target = Replicating.Player[schemaName]
@@ -128,8 +160,13 @@ function DataStream:AddPlayerStreamTemplate(name : string, schema : {[any] : any
     SchemaCache[name] = schema
 
     Players.PlayerAdded:Connect(function(player)
-        self:MakeStreamForPlayer(name, player, DataStreamUtils:DeepCopyTable(schema))
+        self:MakeStreamForPlayer(name, player, schema)
     end)
+
+    -- Cover players who joined before this template was registered.
+    for _, player in Players:GetPlayers() do
+        self:MakeStreamForPlayer(name, player, schema)
+    end
 
     Players.ChildRemoved:Connect(function(player)
         if player:IsA("Player") then
@@ -157,6 +194,11 @@ function DataStream:MakeStreamForPlayer(name : string, player : Player, schema :
 
     local newDataStream = DataStreamMeta:MakeDataStreamObject(name, schema, player)
     SetStreamObjectToPlayer(name, player, newDataStream)
+
+    -- If this player's client already fetched (stream created after join, e.g. lazy
+    -- or late registration), push the root as a baseline. Gated internally on the
+    -- client having called GetData, so this is a no-op during normal boot.
+    DataStreamMeta:TriggerReplicate(player, name, {}, newDataStream:Read())
 
     DataStream.PlayerStreamAdded:Fire(name, player)
 
@@ -192,6 +234,11 @@ function DataStream:MakeGlobalStream(name : string, schema : {[any] : any})
     ValidateStreamName(name)
 
     Replicating.Global[name] = DataStreamMeta:MakeDataStreamObject(name, schema)
+
+    -- Baseline for clients that fetched before this stream was registered.
+    -- Clients that haven't fetched yet queue this root update and apply it after
+    -- their fetch, so it is never lost and never applied out of order.
+    DataStreamMeta:TriggerReplicate(nil, name, {}, Replicating.Global[name]:Read())
 end
 
 function DataStream:GetPlayersWithSchema(name : string) : {Player}
@@ -219,25 +266,14 @@ end
 
 --= Initializers =--
 do
-    for _, playerSchema in script.Schemas.Player:GetChildren() do
-        if playerSchema:IsA("ModuleScript") then
-            DataStream:AddPlayerStreamTemplate(playerSchema.Name, require(playerSchema))
-        end
-    end
-    for _, globalSchema in script.Schemas.Global:GetChildren() do
-        if globalSchema:IsA("ModuleScript") then
-            DataStream:MakeGlobalStream(globalSchema.Name, require(globalSchema))
-        end
-    end
-
     GetDataFunction.OnServerInvoke = function(player, schemaName)
         DataStreamMeta:EnableReplicationForPlayer(player)
         local function makeReturnDataFromSchema(schema)
-            local nonStringIndexes, valueForTransport = DataStreamMeta:GetNonStringIndexesFromValue(schema:Read())
+            local repairs, valueForTransport = DataStreamMeta:PrepareValueForTransport(schema:Read())
 
             return {
                 Data = valueForTransport,
-                NonStringIndexes = nonStringIndexes
+                Repairs = repairs
             }
         end
 
@@ -274,19 +310,14 @@ end
 --= Return Module =--
 return setmetatable(DataStream, {
     __index = function(self, index)
-        local replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
-        if replicatorTarget then
-            return replicatorTarget
-        else
-            error("Attempt to index non-existent schema '"..tostring(index).."'")
-        end
+        return WaitForSchema(index)
     end,
     __newindex = function(self, index, value)
-        local replicatorTarget = Replicating.Global[index]
-        if replicatorTarget then
+        local replicatorTarget = WaitForSchema(index)
+        if Replicating.Global[index] then
             replicatorTarget:Write(value)
         else
-            error("Attempt to index non-existent schema '"..tostring(index).."'")
+            error("Attempt to write to the root of player schema '"..tostring(index).."'. Index a player first.")
         end
 
         return self

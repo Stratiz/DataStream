@@ -1,0 +1,15 @@
+{
+  "file_version": 2,
+  "packages": {
+    "stratiz/Signal": [
+      {
+        "version": "1.0.0",
+        "integrity": "7ea62961f1d94c7960955296086158fa061d3fb14e75032397eeef004e33bfbb",
+        "public": true,
+        "root": "init.lua",
+        "location": "~",
+        "dependencies": {}
+      }
+    ]
+  }
+}
