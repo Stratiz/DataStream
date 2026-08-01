@@ -5,13 +5,10 @@
 
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
-      "packages": {
+      "Packages": {
         "$className": "Folder",
         "DataStream" : {
-          "$path": "src",
-          "Packages" : {
-            "$path": "Packages"
-          }
+          "$path": "src"
         }
       }
     }

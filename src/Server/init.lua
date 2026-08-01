@@ -211,6 +211,12 @@ function DataStream:RemoveStreamForPlayer(name : string, player : Player)
 
     if RegisteredPlayers[player] then
         RegisteredPlayers[player][name] = nil
+        -- Prune the per-player table once empty: it's keyed by the Player
+        -- instance and would otherwise pin departed players in memory when
+        -- streams are managed manually (without AddPlayerStreamTemplate).
+        if next(RegisteredPlayers[player]) == nil then
+            RegisteredPlayers[player] = nil
+        end
     end
 
     -- Capture the exact stream we're removing. If the same UserId rejoins before this deferred
@@ -268,12 +274,15 @@ end
 do
     GetDataFunction.OnServerInvoke = function(player, schemaName)
         DataStreamMeta:EnableReplicationForPlayer(player)
-        local function makeReturnDataFromSchema(schema)
+        -- Seq marks which updates this snapshot already contains, so the client
+        -- can drop queued/in-flight updates that are already baked in.
+        local function makeReturnDataFromSchema(schema, name, ownerPlayer)
             local repairs, valueForTransport = DataStreamMeta:PrepareValueForTransport(schema:Read())
 
             return {
                 Data = valueForTransport,
-                Repairs = repairs
+                Repairs = repairs,
+                Seq = DataStreamMeta:GetSequence(name, ownerPlayer)
             }
         end
 
@@ -283,12 +292,12 @@ do
 
             for name, schema in pairs(Replicating.Player) do
                 if schema[playerIndex] then
-                    toReturn[name] = makeReturnDataFromSchema(schema[playerIndex])
+                    toReturn[name] = makeReturnDataFromSchema(schema[playerIndex], name, player)
                 end
             end
 
             for name, schema in pairs(Replicating.Global) do
-                toReturn[name] = makeReturnDataFromSchema(schema)
+                toReturn[name] = makeReturnDataFromSchema(schema, name, nil)
             end
 
             return toReturn
@@ -296,12 +305,12 @@ do
             if Replicating.Player[schemaName] then
                 local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
                 if Replicating.Player[schemaName][playerIndex] then
-                    return makeReturnDataFromSchema(Replicating.Player[schemaName][playerIndex])
+                    return makeReturnDataFromSchema(Replicating.Player[schemaName][playerIndex], schemaName, player)
                 else
                     return nil
                 end
             else
-                return makeReturnDataFromSchema(Replicating.Global[schemaName])
+                return makeReturnDataFromSchema(Replicating.Global[schemaName], schemaName, nil)
             end
         end
     end

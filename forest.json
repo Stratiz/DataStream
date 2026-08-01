@@ -1,6 +1,7 @@
 {
   "author": "stratiz",
   "dependencies": {
+    "stratiz/Cleaner": "^1.0.0",
     "stratiz/Signal": "^1.0.0"
   },
   "description": "A real-time data replication solution",

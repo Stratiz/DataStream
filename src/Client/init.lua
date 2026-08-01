@@ -26,6 +26,7 @@ local ClientMeta = require(script:WaitForChild("ClientDataStreamMeta"))
 local DataStreamRemotes = require(script.Parent.Shared:WaitForChild("DataStreamRemotes"))
 local DataStreamUtils = require(script.Parent.Shared:WaitForChild("DataStreamUtils"))
 local DataStreamInstanceRefs = require(script.Parent.Shared:WaitForChild("DataStreamInstanceRefs"))
+local Cleaner = require(script.Parent:WaitForChild("Packages"):WaitForChild("Cleaner"))
 
 --= Object References =--
 
@@ -44,6 +45,8 @@ local RealData = {}
 local DidFetch = false
 local UpdateCache = {}
 local PendingRefs = {} -- [schemaName][entryKey] = pending instance ref entry
+local LastSequence = {} -- [schemaName] = last applied update sequence number
+local UpdateGeneration = 0 -- bumped per applied update; marks which pending refs it (re)registered
 
 --= Internal Functions =--
 
@@ -52,6 +55,13 @@ local function warn(...)
 end
 
 local function UpdateRoot(rootName : string, data : any)
+	if data == nil then
+		-- Stream removed (e.g. RemoveStreamForPlayer): empty the root but keep
+		-- its identity, since catcher closures capture the table.
+		table.clear(RealData[rootName])
+		return
+	end
+
 	if type(data) ~= "table" then
 		warn("Something tried to set data to a non-table for", rootName, data)
 		return
@@ -73,8 +83,35 @@ local function RemovePendingEntry(entry)
 	if nameCache and nameCache[entry.Key] == entry then
 		nameCache[entry.Key] = nil
 	end
-	if entry.Cancel then
-		entry.Cancel()
+	entry.Cleanup:Destroy()
+end
+
+local function IsPathPrefixOf(prefix : {any}, pathTable : {any}) : boolean
+	if #prefix > #pathTable then
+		return false
+	end
+	for index, fragment in prefix do
+		if pathTable[index] ~= fragment then
+			return false
+		end
+	end
+	return true
+end
+
+-- A set-write replaces the whole subtree at its path, so pending refs under it
+-- that this update did not itself (re)register are for data that no longer
+-- exists — drop them (and their resolver listeners) instead of letting them
+-- accumulate for instances that may never appear.
+local function PrunePendingUnder(name : string, pathTable : {any})
+	local nameCache = PendingRefs[name]
+	if not nameCache then
+		return
+	end
+
+	for _, entry in pairs(nameCache) do
+		if entry.Generation ~= UpdateGeneration and IsPathPrefixOf(pathTable, entry.Path) then
+			RemovePendingEntry(entry)
+		end
 	end
 end
 
@@ -189,6 +226,7 @@ local function RegisterPendingInstance(name : string, id : string, path : {any},
 		if isKey then
 			existingEntry.Value = parkedValue
 		end
+		existingEntry.Generation = UpdateGeneration
 		return
 	end
 
@@ -200,19 +238,21 @@ local function RegisterPendingInstance(name : string, id : string, path : {any},
 		IsKey = isKey,
 		Value = parkedValue,
 		Applied = false,
+		Generation = UpdateGeneration,
+		Cleanup = Cleaner.new(),
 	}
 	nameCache[entryKey] = entry
 
-	entry.Cancel = DataStreamInstanceRefs:OnResolved(id, function(instance)
+	entry.Cleanup:Add(DataStreamInstanceRefs:OnResolved(id, function(instance)
 		ApplyResolvedInstance(entry, instance)
-	end)
+	end))
 
-	task.delay(PENDING_REF_WARN_SECONDS, function()
+	entry.Cleanup:Add(task.delay(PENDING_REF_WARN_SECONDS, function()
 		if nameCache[entryKey] == entry and not entry.Applied then
 			warn("Instance reference still unresolved after " .. PENDING_REF_WARN_SECONDS .. "s |",
 				name, "|", DataStreamUtils.StringifyPathTable(path), "| id:", id)
 		end
-	end)
+	end))
 end
 
 --// Transport repairs --------------------------------------------------------
@@ -257,17 +297,19 @@ local function ApplyTransportRepairs(name : string, basePath : {any}, value : an
 	end
 
 	for _, repair in ipairs(repairs) do
-		local pathKeys = repair.Path
+		-- Positional layout (see PrepareValueForTransport): [1] kind, [2] path,
+		-- [3] ref id ("V"/"K") or original key ("I"), [4] instance ("V"/"K").
+		local kind, pathKeys, instance = repair[1], repair[2], repair[4]
 
 		if #pathKeys == 0 then
 			-- The transported value itself is an instance slot.
-			if repair.Kind == "InstanceValue" then
-				if repair.Instance then
-					value = repair.Instance
+			if kind == "V" then
+				if instance then
+					value = instance
 				else
 					value = nil
 					if #basePath > 0 then
-						RegisterPendingInstance(name, repair.Id, table.clone(basePath), false, nil)
+						RegisterPendingInstance(name, repair[3], table.clone(basePath), false, nil)
 					else
 						warn("Cannot defer an unreplicated instance at a stream root")
 					end
@@ -284,30 +326,30 @@ local function ApplyTransportRepairs(name : string, basePath : {any}, value : an
 
 		if type(current) ~= "table" then
 			warn("Invalid repair path | " .. DataStreamUtils.StringifyPathTable(pathKeys))
-		elseif repair.Kind == "Index" then
-			current[repair.IndexValue] = current[lastKey]
-			keyMap[lastKey] = repair.IndexValue
+		elseif kind == "I" then
+			current[repair[3]] = current[lastKey]
+			keyMap[lastKey] = repair[3]
 			table.insert(toClear, {current, lastKey})
-		elseif repair.Kind == "InstanceKey" then
-			if repair.Instance then
-				current[repair.Instance] = current[lastKey]
-				keyMap[lastKey] = repair.Instance
+		elseif kind == "K" then
+			if instance then
+				current[instance] = current[lastKey]
+				keyMap[lastKey] = instance
 				table.insert(toClear, {current, lastKey})
 			else
 				keyMap[lastKey] = UNRESOLVED
 				table.insert(parkedKeys, {Parent = current, Placeholder = lastKey, Repair = repair})
 			end
-		elseif repair.Kind == "InstanceValue" then
-			if repair.Instance then
+		elseif kind == "V" then
+			if instance then
 				-- The slot key may itself be a placeholder that an earlier repair
 				-- already moved; write to the real key so the value isn't lost
 				-- when placeholders are cleared.
 				local realKey = mapFragment(lastKey)
-				current[if realKey == UNRESOLVED then lastKey else realKey] = repair.Instance
+				current[if realKey == UNRESOLVED then lastKey else realKey] = instance
 			else
 				local absolutePath = makeAbsolutePath(pathKeys, false)
 				if absolutePath then
-					RegisterPendingInstance(name, repair.Id, absolutePath, false, nil)
+					RegisterPendingInstance(name, repair[3], absolutePath, false, nil)
 				end
 			end
 		end
@@ -329,12 +371,13 @@ local function ApplyTransportRepairs(name : string, basePath : {any}, value : an
 		local parkedValue = parked.Parent[parked.Placeholder]
 		parked.Parent[parked.Placeholder] = nil
 
-		local parentAbsolutePath = makeAbsolutePath(parked.Repair.Path, true)
+		local repairPath = parked.Repair[2]
+		local parentAbsolutePath = makeAbsolutePath(repairPath, true)
 		if parentAbsolutePath then
-			RegisterPendingInstance(name, parked.Repair.Id, parentAbsolutePath, true, DataStreamUtils.DeepFreeze(parkedValue))
+			RegisterPendingInstance(name, parked.Repair[3], parentAbsolutePath, true, DataStreamUtils.DeepFreeze(parkedValue))
 		else
 			warn("Dropping instance-keyed entry nested under another unresolved instance key |",
-				DataStreamUtils.StringifyPathTable(parked.Repair.Path))
+				DataStreamUtils.StringifyPathTable(repairPath))
 		end
 	end
 
@@ -343,14 +386,15 @@ end
 
 --// Update handling ----------------------------------------------------------
 
--- Path fragments can be encoded instance refs (see EncodePathForTransport on the
--- server). Returns nil when a fragment's instance can't be resolved — the caller
--- falls back to a full re-sync.
+-- Path fragments can be encoded instance refs ({refId, instance} — see
+-- EncodePathForTransport on the server; real fragments are never tables).
+-- Returns nil when a fragment's instance can't be resolved — the caller falls
+-- back to a full re-sync.
 local function DecodePath(pathTable) : {any}?
 	local decoded = table.clone(pathTable or {})
 	for index, fragment in decoded do
-		if type(fragment) == "table" and fragment.__dsRefId then
-			local instance = fragment.Instance or DataStreamInstanceRefs:Resolve(fragment.__dsRefId)
+		if type(fragment) == "table" then
+			local instance = fragment[2] or DataStreamInstanceRefs:Resolve(fragment[1])
 			if not instance then
 				return nil
 			end
@@ -363,6 +407,8 @@ end
 local function Resync(name : string)
 	warn("Data may be out of sync, re-syncing with server...")
 
+	UpdateGeneration += 1
+
 	if not RealData[name] then
 		RealData[name] = {}
 	end
@@ -370,28 +416,79 @@ local function Resync(name : string)
 
 	local schemaInfo = GetDataFunction:InvokeServer(name)
 	if schemaInfo then
+		-- max(): an update applied during the InvokeServer yield may be newer
+		-- than the snapshot; never move the sequence backwards.
+		LastSequence[name] = math.max(LastSequence[name] or 0, schemaInfo.Seq or 0)
 		local data = ApplyTransportRepairs(name, {}, schemaInfo.Data, schemaInfo.Repairs)
 		UpdateRoot(name, if type(data) == "table" then DataStreamUtils.FreezeChildren(data) else data)
 	else
 		UpdateRoot(name, {})
 	end
+	PrunePendingUnder(name, {})
 
 	ClientMeta:PathChanged(name, {}, RealData[name], oldRoot, RealData[name])
 end
 
-local function UpdateData(name : string, path : {any}, value : any, repairs)
+local function UpdateData(name : string, seq : number?, path : {any}, value : any, repairs, op : {any}?)
+	-- Updates already contained in a fetched snapshot arrive with a sequence at
+	-- or below the snapshot's — skip them. Set-writes would merely be redundant,
+	-- but array ops would double-apply.
+	if type(seq) == "number" then
+		local lastSeq = LastSequence[name]
+		if lastSeq and seq <= lastSeq then
+			return
+		end
+		LastSequence[name] = seq
+	end
+
 	local decodedPath = DecodePath(path)
 	if not decodedPath then
 		Resync(name)
 		return
 	end
 
-	value = ApplyTransportRepairs(name, decodedPath, value, repairs)
-	value = DataStreamUtils.DeepFreeze(value)
+	UpdateGeneration += 1
 
 	if not RealData[name] then
 		RealData[name] = {}
 	end
+
+	if op then
+		-- Array delta: op = {"i"|"r", position}; value is the inserted element
+		-- for "i". Applied to a clone of the local array — if local state can't
+		-- support the op, the client is desynced and falls back to a re-sync.
+		local kind, position = op[1], op[2]
+		local currentArray = if #decodedPath == 0 then RealData[name] else DataStreamUtils.GetValueAtPath(RealData[name], decodedPath)
+		if type(currentArray) ~= "table" or type(position) ~= "number" then
+			Resync(name)
+			return
+		end
+
+		local newArray = table.clone(currentArray)
+		if kind == "i" then
+			if position < 1 or position > #newArray + 1 then
+				Resync(name)
+				return
+			end
+			local elementPath = table.clone(decodedPath)
+			table.insert(elementPath, position)
+			local element = ApplyTransportRepairs(name, elementPath, value, repairs)
+			table.insert(newArray, position, DataStreamUtils.DeepFreeze(element))
+		elseif kind == "r" then
+			if position < 1 or position > #newArray then
+				Resync(name)
+				return
+			end
+			table.remove(newArray, position)
+		else
+			Resync(name)
+			return
+		end
+		value = newArray
+	else
+		value = ApplyTransportRepairs(name, decodedPath, value, repairs)
+	end
+	value = DataStreamUtils.DeepFreeze(value)
 
 	local oldValue = nil
 	if #decodedPath == 0 then
@@ -405,6 +502,13 @@ local function UpdateData(name : string, path : {any}, value : any, repairs)
 			Resync(name)
 			return
 		end
+	end
+
+	-- A set-write replaced the subtree at this path; pending refs under it that
+	-- this update didn't re-register point at discarded data. (Ops are deltas —
+	-- they invalidate nothing.)
+	if not op then
+		PrunePendingUnder(name, decodedPath)
 	end
 
 	ClientMeta:PathChanged(name, decodedPath, value, oldValue, RealData[name])
@@ -425,6 +529,7 @@ do
 
 	--// Fetch stores from server
 	for name, schemaInfo in pairs(GetDataFunction:InvokeServer()) do
+		LastSequence[name] = schemaInfo.Seq or 0
 		local data = ApplyTransportRepairs(name, {}, schemaInfo.Data, schemaInfo.Repairs)
 		if type(data) == "table" then
 			RealData[name] = DataStreamUtils.FreezeChildren(data)

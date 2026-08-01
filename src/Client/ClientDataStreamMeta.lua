@@ -82,6 +82,38 @@ local function GetValueFromPathTable(rootTable, pathTable) : any?
     return currentTarget
 end
 
+-- Removes now-empty signal tree nodes after a full disconnect. Without this,
+-- every path ever listened to leaves its node chain behind — including nodes
+-- keyed by Instances, which would pin destroyed instances in memory.
+local function PruneSignalNodes(name, pathTable)
+    local nameCache = SignalCache[name]
+    if not nameCache then
+        return
+    end
+
+    local chain = {nameCache}
+    for depth, index in pathTable do
+        local nextNode = chain[depth][index]
+        if not nextNode then
+            break
+        end
+        chain[depth + 1] = nextNode
+    end
+
+    for depth = #chain - 1, 1, -1 do
+        local node = chain[depth + 1]
+        if next(node) == nil and getmetatable(node) == nil then
+            chain[depth][pathTable[depth]] = nil
+        else
+            break
+        end
+    end
+
+    if next(nameCache) == nil and getmetatable(nameCache) == nil then
+        SignalCache[name] = nil
+    end
+end
+
 local function BindChanged(name, pathTable, callback)
     if not SignalCache[name] then
         SignalCache[name] = {}
@@ -114,6 +146,7 @@ local function BindChanged(name, pathTable, callback)
             if currentSignalData.ConnectionCount <= 0 then
                 currentSignalData.Signal:Destroy()
                 setmetatable(currentCache, nil)
+                PruneSignalNodes(name, pathTable)
             end
         end
     }

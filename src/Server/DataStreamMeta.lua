@@ -53,6 +53,41 @@ local ReplicatingToPlayers = {}
 
 --= Internal Functions =--
 
+-- Removes now-empty signal tree nodes after a full disconnect. Without this,
+-- every path ever listened to leaves its node chain behind — including nodes
+-- keyed by Instances, which would pin destroyed instances in memory.
+local function PruneSignalNodes(name, ownerId, pathTable)
+    local ownerCache = SignalCache[name] and SignalCache[name][ownerId]
+    if not ownerCache then
+        return
+    end
+
+    local chain = {ownerCache}
+    for depth, index in pathTable do
+        local nextNode = chain[depth][index]
+        if not nextNode then
+            break
+        end
+        chain[depth + 1] = nextNode
+    end
+
+    for depth = #chain - 1, 1, -1 do
+        local node = chain[depth + 1]
+        if next(node) == nil and getmetatable(node) == nil then
+            chain[depth][pathTable[depth]] = nil
+        else
+            break
+        end
+    end
+
+    if next(ownerCache) == nil and getmetatable(ownerCache) == nil then
+        SignalCache[name][ownerId] = nil
+        if next(SignalCache[name]) == nil then
+            SignalCache[name] = nil
+        end
+    end
+end
+
 local function BindChanged(name, ownerId, pathTable, callback)
     if not SignalCache[name] then
         SignalCache[name] = {}
@@ -89,6 +124,7 @@ local function BindChanged(name, ownerId, pathTable, callback)
             if currentSignalData.ConnectionCount <= 0 then
                 currentSignalData.Signal:Destroy()
                 setmetatable(currentCache, nil)
+                PruneSignalNodes(name, ownerId, pathTable)
             end
         end
     }
@@ -206,17 +242,22 @@ end
 --= API Functions =--
 
 -- Rebuilds a value into a remote-safe transport table plus a repair list the
--- client applies after deserialization. Repair kinds:
---   "Index"         -> non-string, non-Instance key moved to a unique placeholder
---   "InstanceKey"   -> Instance key moved to a unique placeholder ("\0I:" .. refId),
---                      so two same-named instances can never collide
---   "InstanceValue" -> Instance value stripped from the transport table; the repair
---                      entry is the source of truth (its Instance field arrives nil
---                      on the client iff the instance hasn't replicated yet, and the
---                      ref id lets the client resolve it later)
+-- client applies after deserialization. Repair entries are positional arrays to
+-- keep the wire lean:
+--   [1] kind: "V" Instance value | "K" Instance key | "I" other non-string key
+--   [2] path fragments (placeholders as shipped in the transport table)
+--   [3] "V"/"K": ref id; "I": the original key value
+--   [4] "V"/"K": the Instance (arrives nil on the client iff not replicated yet;
+--       the ref id lets the client resolve it later)
+-- Kinds:
+--   "V" -> Instance value stripped from the transport table; the repair entry is
+--          the source of truth
+--   "K" -> Instance key moved to a unique placeholder ("\1" .. refId), so two
+--          same-named instances can never collide
+--   "I" -> non-string, non-Instance key moved to a unique placeholder ("\2" .. n)
 -- Dense arrays keep their numeric keys as-is (the serializer handles them
 -- faithfully), so they don't generate per-element repair entries.
-function DataMeta:PrepareValueForTransport(value : any) : ({{[string] : any}}, any)
+function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
     local repairs = {}
     local placeholderCounter = 0
 
@@ -235,10 +276,10 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{[string] : any}}, a
     local function walk(targetValue, targetPathTable)
         if typeof(targetValue) == "Instance" then
             table.insert(repairs, {
-                Kind = "InstanceValue",
-                Path = table.clone(targetPathTable),
-                Id = DataStreamInstanceRefs:GetId(targetValue),
-                Instance = targetValue,
+                "V",
+                table.clone(targetPathTable),
+                DataStreamInstanceRefs:GetId(targetValue),
+                targetValue,
             })
             return nil
         elseif type(targetValue) ~= "table" then
@@ -264,25 +305,25 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{[string] : any}}, a
                 newTargetValue[index] = walk(child, newPathTable)
             elseif typeof(index) == "Instance" then
                 local refId = DataStreamInstanceRefs:GetId(index)
-                local placeholder = "\0I:" .. refId
+                local placeholder = "\1" .. refId
 
                 table.insert(newPathTable, placeholder)
                 table.insert(repairs, {
-                    Kind = "InstanceKey",
-                    Path = newPathTable,
-                    Id = refId,
-                    Instance = index,
+                    "K",
+                    newPathTable,
+                    refId,
+                    index,
                 })
                 newTargetValue[placeholder] = walk(child, newPathTable)
             else
                 placeholderCounter += 1
-                local placeholder = "\0K:" .. placeholderCounter
+                local placeholder = "\2" .. placeholderCounter
 
                 table.insert(newPathTable, placeholder)
                 table.insert(repairs, {
-                    Kind = "Index",
-                    Path = newPathTable,
-                    IndexValue = index,
+                    "I",
+                    newPathTable,
+                    index,
                 })
                 newTargetValue[placeholder] = walk(child, newPathTable)
             end
@@ -295,16 +336,15 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{[string] : any}}, a
 end
 
 -- Path fragments can themselves be Instance keys (a write nested under an
--- instance-keyed entry). Encode those so the client can resolve them by ref id
--- instead of receiving a bare nil for unreplicated instances.
+-- instance-keyed entry). Encode those as {refId, instance} so the client can
+-- resolve them by ref id instead of receiving a bare nil for unreplicated
+-- instances. Real path fragments are never tables, so a table fragment is
+-- unambiguously an encoded ref.
 local function EncodePathForTransport(pathTable : {any}) : {any}
     local encoded = table.clone(pathTable)
     for index, fragment in encoded do
         if typeof(fragment) == "Instance" then
-            encoded[index] = {
-                __dsRefId = DataStreamInstanceRefs:GetId(fragment),
-                Instance = fragment,
-            }
+            encoded[index] = {DataStreamInstanceRefs:GetId(fragment), fragment}
         end
     end
     return encoded
@@ -314,17 +354,92 @@ function DataMeta:EnableReplicationForPlayer(player : Player)
     ReplicatingToPlayers[player] = true
 end
 
-function DataMeta:TriggerReplicate(owner, name, pathTable, value)
-    local repairs, valueForTransport = self:PrepareValueForTransport(value)
-    local pathForTransport = EncodePathForTransport(pathTable)
+--// Replication queue --------------------------------------------------------
+-- Writes are coalesced per resumption cycle instead of firing a remote each:
+-- a plain set supersedes any queued write at the same or a descendant path
+-- (its frozen snapshot already contains that state), so rapid-fire writes to
+-- one path ship once. Every update carries a per-stream sequence number, and
+-- GetData snapshots report the sequence they contain — that lets clients drop
+-- updates already baked into a snapshot, which matters because array ops (see
+-- Insert/Remove) are not idempotent the way set-writes are.
 
-    local targetEvent = DataStreamRemotes:Get("Event", name)
-    if owner then
-        if ReplicatingToPlayers[owner] then
-            targetEvent:FireClient(owner, pathForTransport, valueForTransport, repairs)
+local ReplicationQueue = {}
+local FlushScheduled = false
+local SequenceCounters = {}
+
+local function GetStreamKey(name : string, owner : Player?) : string
+    return name .. "\0" .. (if owner then tostring(owner.UserId) else "")
+end
+
+local function IsPathPrefixOf(prefix : {any}, pathTable : {any}) : boolean
+    if #prefix > #pathTable then
+        return false
+    end
+    for index, fragment in prefix do
+        if pathTable[index] ~= fragment then
+            return false
+        end
+    end
+    return true
+end
+
+function DataMeta:GetSequence(name : string, owner : Player?) : number
+    return SequenceCounters[GetStreamKey(name, owner)] or 0
+end
+
+local function SendReplication(entry)
+    local repairs, valueForTransport = DataMeta:PrepareValueForTransport(entry.Value)
+    local pathForTransport = EncodePathForTransport(entry.PathTable)
+
+    local targetEvent = DataStreamRemotes:Get("Event", entry.Name)
+    if entry.Owner then
+        if ReplicatingToPlayers[entry.Owner] then
+            targetEvent:FireClient(entry.Owner, entry.Seq, pathForTransport, valueForTransport, repairs, entry.Op)
         end
     else
-        targetEvent:FireAllClients(pathForTransport, valueForTransport, repairs)
+        targetEvent:FireAllClients(entry.Seq, pathForTransport, valueForTransport, repairs, entry.Op)
+    end
+end
+
+-- op is nil for a plain set, or {"i", position} / {"r", position} for array ops
+-- (value = the inserted element for "i", nil for "r").
+function DataMeta:TriggerReplicate(owner, name, pathTable, value, op)
+    -- Ops are deltas, not snapshots — they never supersede anything.
+    if not op then
+        for index = #ReplicationQueue, 1, -1 do
+            local entry = ReplicationQueue[index]
+            if entry.Owner == owner and entry.Name == name and IsPathPrefixOf(pathTable, entry.PathTable) then
+                table.remove(ReplicationQueue, index)
+            end
+        end
+    end
+
+    -- Sequence is assigned at write time (not send time) so a GetData snapshot
+    -- taken now already accounts for everything queued; coalesced-away entries
+    -- just leave gaps, which the client's monotonic check doesn't mind.
+    local streamKey = GetStreamKey(name, owner)
+    local sequence = (SequenceCounters[streamKey] or 0) + 1
+    SequenceCounters[streamKey] = sequence
+
+    table.insert(ReplicationQueue, {
+        Owner = owner,
+        Name = name,
+        PathTable = pathTable,
+        Value = value,
+        Op = op,
+        Seq = sequence,
+    })
+
+    if not FlushScheduled then
+        FlushScheduled = true
+        task.defer(function()
+            FlushScheduled = false
+            local queue = ReplicationQueue
+            ReplicationQueue = {}
+            for _, entry in queue do
+                SendReplication(entry)
+            end
+        end)
     end
 end
 
@@ -337,8 +452,8 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
     -- Create remote event for replication
     DataStreamRemotes:Get("Event", name)
 
-    local function ReplicateData(pathTable : { string }, value : any)
-        self:TriggerReplicate(owner, name, pathTable, value)
+    local function ReplicateData(pathTable : { string }, value : any, op : {any}?)
+        self:TriggerReplicate(owner, name, pathTable, value, op)
     end
 
     -- Value must already be frozen (ingested) if it is a table.
@@ -496,22 +611,33 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
                     error("Attempted to " .. CatcherMeta.LastIndex:lower() .. " a value on a non-table value.")
                 end
 
+                -- Replicated as a delta ({"i"/"r", position}) rather than
+                -- re-shipping the whole array on every call.
                 local newTable = table.clone(currentTable)
+                local opForTransport, elementForTransport
                 if CatcherMeta.LastIndex == "Insert" then
                     local packedArgs = table.pack(...)
+                    local position
                     if packedArgs.n >= 2 then
-                        table.insert(newTable, packedArgs[1], DataStreamUtils.DeepCopyAndFreeze(packedArgs[2]))
+                        position = packedArgs[1]
+                        elementForTransport = DataStreamUtils.DeepCopyAndFreeze(packedArgs[2])
+                        table.insert(newTable, position, elementForTransport)
                     else
-                        table.insert(newTable, DataStreamUtils.DeepCopyAndFreeze(packedArgs[1]))
+                        elementForTransport = DataStreamUtils.DeepCopyAndFreeze(packedArgs[1])
+                        table.insert(newTable, elementForTransport)
+                        position = #newTable
                     end
+                    opForTransport = {"i", position}
                 else
-                    table.remove(newTable, ...)
+                    local position = table.pack(...)[1] or #newTable
+                    table.remove(newTable, position)
+                    opForTransport = {"r", position}
                 end
                 table.freeze(newTable)
 
                 local OldTable = SetValueFromPath(truePathTable, newTable)
                 internalChangedTrigger(CatcherMeta, OldTable, newTable, true)
-                ReplicateData(truePathTable, newTable)
+                ReplicateData(truePathTable, elementForTransport, opForTransport)
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
@@ -541,7 +667,15 @@ end
 do
     Players.PlayerRemoving:Connect(function(player)
         ReplicatingToPlayers[player] = nil
-        for _, owners in pairs(SignalCache) do
+
+        local streamKeySuffix = "\0" .. tostring(player.UserId)
+        for key in pairs(SequenceCounters) do
+            if string.sub(key, -#streamKeySuffix) == streamKeySuffix then
+                SequenceCounters[key] = nil
+            end
+        end
+
+        for name, owners in pairs(SignalCache) do
             local targetOwner = tostring(player.UserId)
             if owners[targetOwner] then
                 local function recurse(signalTable : {[string] : {}})
@@ -555,6 +689,9 @@ do
                 end
                 recurse(owners[targetOwner])
                 owners[targetOwner] = nil
+                if next(owners) == nil then
+                    SignalCache[name] = nil
+                end
             end
         end
     end)

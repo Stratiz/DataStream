@@ -10,6 +10,16 @@
         "location": "~",
         "dependencies": {}
       }
+    ],
+    "stratiz/Cleaner": [
+      {
+        "version": "1.0.0",
+        "integrity": "a709f190f4ead365c2a06a916d199b1d4ca0e79295470e88607cdbc5a09fc088",
+        "public": true,
+        "root": "init.lua",
+        "location": "~",
+        "dependencies": {}
+      }
     ]
   }
 }
