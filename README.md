@@ -30,7 +30,7 @@ As a bonus, since writes swap tables out instead of modifying them, anything you
   - [Methods `DataStreamObject`](#methods-datastreamobject)
     - [**:Read()**](#read)
     - [**:Write()**](#write)
-    - [**:Changed((newValue : any) -\> ())**](#changednewvalue--any---)
+    - [**:Changed((newValue : any, oldValue : any) -\> ())**](#changednewvalue--any-oldvalue--any---)
     - [**:ChildAdded((indexOfChild : any) -\> ())**](#childaddedindexofchild--any---)
     - [**:ChildRemoved((indexOfChild : any) -\> ())**](#childremovedindexofchild--any---)
     - [**:Insert(value : any)**](#insertvalue--any)
@@ -95,9 +95,16 @@ DataStream:AddPlayerStreamTemplate("Stored", require(script.Schemas.Stored))
 
 The only rule: register your streams as soon as your script runs, with no yields before the registration calls (no `task.wait`, no `WaitForChild`, etc).
 
-You don't need to worry about script load order. If a script indexes a stream that hasn't been registered yet, DataStream simply waits for the next threads to run so the stream has a chance to load and warns after 5 seconds if it still isn't found (just like `WaitForChild`). This works the same way on the client.
+If another script might index a stream before the registering script has run, use `WaitForSchema` — it yields until the stream exists, just like `WaitForChild` (including the warning if it's taking suspiciously long):
 
-Registering a stream late (after players are already in game) is also fine: DataStream will push the stream's data to connected clients when it's registered.
+```lua
+local gameData = DataStream:WaitForSchema("GameData")
+gameData.CurrentGameMessage = "Hello!"
+```
+
+Plain indexing (`DataStream.GameData`) doesn't wait: on the server it errors if the schema isn't registered, and on the client it returns `nil` until the schema's data has arrived. This is a Luau limitation — index operations run inside metamethods, which aren't allowed to yield.
+
+Registering a stream late (after players are already in game) is also fine: DataStream will push the stream's data to connected clients when it's registered, and any `WaitForSchema` calls waiting on it will resolve.
 
 
 ## Methods `DataStreamObject`
@@ -127,12 +134,12 @@ DataStream.SchemaName.ValueName += 10
 DataStream.SchemaName.ValueName -= 10
 ```
 
-### **:Changed((newValue : any) -> ())**
-Fires a callback function when the referenced value is changed
+### **:Changed((newValue : any, oldValue : any) -> ())**
+Fires a callback function when the referenced value is changed. The callback also receives the value from before the change — both are frozen snapshots, so they stay stable even as more writes happen.
 
 ```lua
-DataStream.SchemaName.ValueName:Changed(function(newValue)
-    print("Value changed to", newValue)
+DataStream.SchemaName.ValueName:Changed(function(newValue, oldValue)
+    print("Value changed from", oldValue, "to", newValue)
 end)
 
 DataStream.SchemaName.ValueName = 10

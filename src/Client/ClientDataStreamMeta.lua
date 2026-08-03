@@ -161,6 +161,34 @@ end
 
 --= API Functions =--
 
+-- Reconstructs a frozen snapshot of the entire pre-update tree from the old value
+-- at the updated path. Cheap under copy-on-write: everything outside the updated
+-- branch is shared by reference, so this costs #path shallow clones — and it is
+-- what lets Changed signals report an accurate oldValue at every depth.
+local function BuildOldRootSnapshot(rawData, pathTable, oldLeafValue)
+    if #pathTable == 0 then
+        return oldLeafValue
+    end
+
+    local parents = {rawData}
+    for index = 1, #pathTable - 1 do
+        local nextNode = parents[index][pathTable[index]]
+        if type(nextNode) ~= "table" then
+            return nil
+        end
+        parents[index + 1] = nextNode
+    end
+
+    local oldNode = oldLeafValue
+    for index = #pathTable, 1, -1 do
+        local snapshot = table.clone(parents[index])
+        snapshot[pathTable[index]] = oldNode
+        table.freeze(snapshot)
+        oldNode = snapshot
+    end
+    return oldNode
+end
+
 function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value : any, oldValue : any, rawData: {})
     local targetCache = SignalCache[name]
 
@@ -168,12 +196,20 @@ function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value 
         local currentParent = targetCache
         local currentPath = {}
 
+        local oldRoot = BuildOldRootSnapshot(rawData, path, oldValue)
+        local function getOldValue(atPath)
+            if oldRoot == nil then
+                return nil
+            end
+            return GetValueFromPathTable(oldRoot, atPath)
+        end
+
         local function childRecurse(targetChild, childPath, check)
             if check then
                 local childSignalData = getmetatable(targetChild)
 
                 if childSignalData then
-                    childSignalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, childPath))
+                    childSignalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, childPath), getOldValue(childPath))
                 end
             end
 
@@ -189,7 +225,7 @@ function ClientDataStreamMeta:PathChanged(name : string, path : {string}, value 
             local signalData = getmetatable(currentParent)
 
             if signalData then
-                signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath))
+                signalData.Signal:Fire("Changed", GetValueFromPathTable(rawData, currentPath), getOldValue(currentPath))
             end
         end
 
@@ -293,9 +329,9 @@ function ClientDataStreamMeta:MakeDataStreamObject(name : string, rawData : {[st
             elseif CatcherMeta.LastIndex == "Changed" then
                 local callback = table.pack(...)[1]
 
-                return BindChanged(name, truePathTable, function(method, newValue)
+                return BindChanged(name, truePathTable, function(method, newValue, oldChangedValue)
                     if method == CatcherMeta.LastIndex then
-                        callback(newValue)
+                        callback(newValue, oldChangedValue)
                     end
                 end)
             elseif CatcherMeta.LastIndex == "ChildAdded" or CatcherMeta.LastIndex == "ChildRemoved" then

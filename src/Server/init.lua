@@ -107,33 +107,6 @@ local function CreatePlayerStreamCatcher(name)
     return proxy
 end
 
--- Streams are registered by whatever server script requires DataStream and calls
--- MakeGlobalStream/AddPlayerStreamTemplate (synchronously, before any yields).
--- Other scripts may index a schema before the registering script has run, so an
--- unknown schema yields until it appears instead of erroring — WaitForChild-style,
--- warning if it takes suspiciously long (e.g. a typo'd schema name).
-local function WaitForSchema(index : string)
-    local replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
-    if replicatorTarget then
-        return replicatorTarget
-    end
-
-    local startTime = os.clock()
-    local warned = false
-    repeat
-        task.wait()
-        replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
-
-        if not replicatorTarget and not warned and os.clock() - startTime >= SCHEMA_WAIT_WARN_SECONDS then
-            warned = true
-            warn("Infinite yield possible waiting for schema '" .. tostring(index)
-                .. "'. Register it with MakeGlobalStream or AddPlayerStreamTemplate on a server script without yielding.")
-        end
-    until replicatorTarget
-
-    return replicatorTarget
-end
-
 local function SetStreamObjectToPlayer(schemaName, player, value)
     local playerIndex = DataStreamUtils.ResolvePlayerSchemaIndex(player)
     local target = Replicating.Player[schemaName]
@@ -150,6 +123,30 @@ end
 --= API Functions =--
 DataStream.PlayerStreamAdded = Signal.new()
 DataStream.PlayerStreamRemoving = Signal.new()
+
+-- Yields until the schema is registered, WaitForChild-style (warns if it takes
+-- suspiciously long, e.g. a typo'd name, but keeps waiting). Use this when
+-- another script registers the schema and load order isn't guaranteed —
+-- metamethods cannot yield, so plain DataStream[name] access errors instead of
+-- waiting when the schema doesn't exist yet.
+function DataStream:WaitForSchema(name : string)
+    local replicatorTarget = Replicating.Global[name] or Replicating.Player[name]
+
+    local startTime = os.clock()
+    local warned = false
+    while not replicatorTarget do
+        task.wait()
+        replicatorTarget = Replicating.Global[name] or Replicating.Player[name]
+
+        if not replicatorTarget and not warned and os.clock() - startTime >= SCHEMA_WAIT_WARN_SECONDS then
+            warned = true
+            warn("Infinite yield possible waiting for schema '" .. tostring(name)
+                .. "'. Register it with MakeGlobalStream or AddPlayerStreamTemplate on a server script without yielding.")
+        end
+    end
+
+    return replicatorTarget
+end
 
 -- Adds a new schema to be a default replicator which is unique to each player
 function DataStream:AddPlayerStreamTemplate(name : string, schema : {[any] : any})
@@ -319,14 +316,21 @@ end
 --= Return Module =--
 return setmetatable(DataStream, {
     __index = function(self, index)
-        return WaitForSchema(index)
+        local replicatorTarget = Replicating.Global[index] or Replicating.Player[index]
+        if replicatorTarget then
+            return replicatorTarget
+        else
+            error("Attempt to index non-existent schema '"..tostring(index).."'. If it registers later, use DataStream:WaitForSchema().")
+        end
     end,
     __newindex = function(self, index, value)
-        local replicatorTarget = WaitForSchema(index)
-        if Replicating.Global[index] then
+        local replicatorTarget = Replicating.Global[index]
+        if replicatorTarget then
             replicatorTarget:Write(value)
-        else
+        elseif Replicating.Player[index] then
             error("Attempt to write to the root of player schema '"..tostring(index).."'. Index a player first.")
+        else
+            error("Attempt to index non-existent schema '"..tostring(index).."'. If it registers later, use DataStream:WaitForSchema().")
         end
 
         return self

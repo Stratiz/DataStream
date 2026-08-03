@@ -547,24 +547,37 @@ do
 	UpdateCache = {}
 end
 
+--= API Functions =--
+
+-- Yields until data for the schema arrives, WaitForChild-style (warns if it
+-- takes suspiciously long, but keeps waiting). Schemas registered on the server
+-- after this client's initial fetch arrive as a root update pushed at
+-- registration time, so waiting here always resolves for a valid schema.
+-- Metamethods cannot yield, so plain ClientDataStream[name] access returns nil
+-- instead of waiting when the schema isn't known yet.
+function ClientDataStream:WaitForSchema(name : string)
+	local startTime = os.clock()
+	local warned = false
+	while RealData[name] == nil do
+		task.wait()
+
+		if not warned and os.clock() - startTime >= SCHEMA_WAIT_WARN_SECONDS then
+			warned = true
+			warn("Infinite yield possible waiting for schema '" .. tostring(name)
+				.. "'. Is it registered on the server, and does this player have it?")
+		end
+	end
+
+	return ClientMeta:MakeDataStreamObject(name, RealData[name])
+end
+
 --= Return Module =--
 return setmetatable(ClientDataStream, {
 	__index = function(_, index)
-		-- Schemas registered on the server after this client's initial fetch arrive
-		-- as a root update pushed at registration time, so an unknown schema yields
-		-- until its data lands instead of returning nil.
-		local startTime = os.clock()
-		local warned = false
-		while RealData[index] == nil do
-			task.wait()
-
-			if not warned and os.clock() - startTime >= SCHEMA_WAIT_WARN_SECONDS then
-				warned = true
-				warn("Infinite yield possible waiting for schema '" .. tostring(index)
-					.. "'. Is it registered on the server, and does this player have it?")
-			end
+		if RealData[index] then
+			return ClientMeta:MakeDataStreamObject(index, RealData[index])
+		else
+			return nil
 		end
-
-		return ClientMeta:MakeDataStreamObject(index, RealData[index])
 	end,
 })
