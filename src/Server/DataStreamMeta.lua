@@ -392,9 +392,10 @@ end
 
 --// Replication queue --------------------------------------------------------
 -- Writes are coalesced per resumption cycle instead of firing a remote each:
--- a plain set supersedes any queued write at the same or a descendant path
--- (its frozen snapshot already contains that state), so rapid-fire writes to
--- one path ship once. Every update carries a per-stream sequence number, and
+-- a plain set supersedes any queued write at the same or a descendant path,
+-- back to the last array op above it (its frozen snapshot already contains
+-- that state), so rapid-fire writes to one path ship once. Every update
+-- carries a per-stream sequence number, and
 -- GetData snapshots report the sequence they contain — that lets clients drop
 -- updates already baked into a snapshot, which matters because array ops (see
 -- Insert/Remove) are not idempotent the way set-writes are.
@@ -444,8 +445,16 @@ function DataMeta:TriggerReplicate(owner, name, pathTable, value, op)
     if not op then
         for index = #ReplicationQueue, 1, -1 do
             local entry = ReplicationQueue[index]
-            if entry.Owner == owner and entry.Name == name and IsPathPrefixOf(pathTable, entry.PathTable) then
-                table.remove(ReplicationQueue, index)
+            if entry.Owner == owner and entry.Name == name then
+                if entry.Op and #entry.PathTable < #pathTable and IsPathPrefixOf(entry.PathTable, pathTable) then
+                    -- An array op above this path shifted positions, and may rely
+                    -- on writes queued before it: write Arr[3], Arr:Remove(1), write
+                    -- Arr[3] — the second write is a different element. Nothing
+                    -- queued before the op is superseded.
+                    break
+                elseif IsPathPrefixOf(pathTable, entry.PathTable) then
+                    table.remove(ReplicationQueue, index)
+                end
             end
         end
     end
