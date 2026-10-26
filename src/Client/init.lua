@@ -26,6 +26,7 @@ local ClientMeta = require(script:WaitForChild("ClientDataStreamMeta"))
 local DataStreamRemotes = require(script.Parent.Shared:WaitForChild("DataStreamRemotes"))
 local DataStreamUtils = require(script.Parent.Shared:WaitForChild("DataStreamUtils"))
 local DataStreamInstanceRefs = require(script.Parent.Shared:WaitForChild("DataStreamInstanceRefs"))
+local DataStreamWire = require(script.Parent.Shared:WaitForChild("DataStreamWire"))
 local Cleaner = require(script.Parent:WaitForChild("Packages"):WaitForChild("Cleaner"))
 
 --= Object References =--
@@ -37,6 +38,7 @@ local GetDataFunction = DataStreamRemotes:Get("Function", "GetData")
 local PENDING_REF_WARN_SECONDS = 30
 local SCHEMA_WAIT_WARN_SECONDS = 5
 local UNRESOLVED = {} -- Sentinel for placeholder keys whose instance hasn't replicated yet
+local ROOT_PATH = table.freeze({})
 
 --= Variables =--
 
@@ -46,6 +48,7 @@ local DidFetch = false
 local UpdateCache = {}
 local PendingRefs = {} -- [schemaName][entryKey] = pending instance ref entry
 local LastSequence = {} -- [schemaName] = last applied update sequence number
+local PathsById = {} -- [schemaName][pathId] = frozen path (see DataStreamWire)
 local UpdateGeneration = 0 -- bumped per applied update; marks which pending refs it (re)registered
 
 --= Internal Functions =--
@@ -404,6 +407,29 @@ local function DecodePath(pathTable) : {any}?
 	return decoded
 end
 
+local function GetPaths(name : string) : {[number] : {any}}
+	local paths = PathsById[name]
+	if not paths then
+		paths = {}
+		PathsById[name] = paths
+	end
+	return paths
+end
+
+-- Adds a GetData snapshot's path ids ({id, path, id, path, ...}). Merges rather
+-- than replaces: ids are never reused, so a stale entry is only dead weight,
+-- while dropping one that a queued update still needs would force a re-sync.
+local function MergePathSnapshot(name : string, flatPaths : {any}?)
+	local paths = GetPaths(name)
+	if not flatPaths then
+		return
+	end
+
+	for index = 1, #flatPaths, 2 do
+		paths[flatPaths[index]] = table.freeze(flatPaths[index + 1])
+	end
+end
+
 local function Resync(name : string)
 	warn("Data may be out of sync, re-syncing with server...")
 
@@ -419,6 +445,7 @@ local function Resync(name : string)
 		-- max(): an update applied during the InvokeServer yield may be newer
 		-- than the snapshot; never move the sequence backwards.
 		LastSequence[name] = math.max(LastSequence[name] or 0, schemaInfo.Seq or 0)
+		MergePathSnapshot(name, schemaInfo.Paths)
 		local data = ApplyTransportRepairs(name, {}, schemaInfo.Data, schemaInfo.Repairs)
 		UpdateRoot(name, if type(data) == "table" then DataStreamUtils.FreezeChildren(data) else data)
 	else
@@ -429,89 +456,203 @@ local function Resync(name : string)
 	ClientMeta:PathChanged(name, {}, RealData[name], oldRoot, RealData[name])
 end
 
-local function UpdateData(name : string, seq : number?, path : {any}, value : any, repairs, op : {any}?)
-	-- Updates already contained in a fetched snapshot arrive with a sequence at
-	-- or below the snapshot's — skip them. Set-writes would merely be redundant,
-	-- but array ops would double-apply.
-	if type(seq) == "number" then
-		local lastSeq = LastSequence[name]
-		if lastSeq and seq <= lastSeq then
-			return
-		end
-		LastSequence[name] = seq
-	end
-
-	local decodedPath = DecodePath(path)
-	if not decodedPath then
-		Resync(name)
-		return
-	end
-
+-- Applies one update at an already-decoded path. Returns false when local state
+-- can't support it (the client is desynced); the caller re-syncs.
+local function ApplyUpdate(name : string, path : {any}, value : any, repairs, opKind : string?, position : number?) : boolean
 	UpdateGeneration += 1
 
 	if not RealData[name] then
 		RealData[name] = {}
 	end
 
-	if op then
-		-- Array delta: op = {"i"|"r", position}; value is the inserted element
-		-- for "i". Applied to a clone of the local array — if local state can't
-		-- support the op, the client is desynced and falls back to a re-sync.
-		local kind, position = op[1], op[2]
-		local currentArray = if #decodedPath == 0 then RealData[name] else DataStreamUtils.GetValueAtPath(RealData[name], decodedPath)
-		if type(currentArray) ~= "table" or type(position) ~= "number" then
-			Resync(name)
-			return
+	if opKind then
+		-- Array delta: value is the inserted element for "i". Applied to a clone
+		-- of the local array.
+		local currentArray = if #path == 0 then RealData[name] else DataStreamUtils.GetValueAtPath(RealData[name], path)
+		if type(currentArray) ~= "table" then
+			return false
 		end
 
 		local newArray = table.clone(currentArray)
-		if kind == "i" then
+		if opKind == "i" then
 			if position < 1 or position > #newArray + 1 then
-				Resync(name)
-				return
+				return false
 			end
-			local elementPath = table.clone(decodedPath)
+			local elementPath = table.clone(path)
 			table.insert(elementPath, position)
 			local element = ApplyTransportRepairs(name, elementPath, value, repairs)
 			table.insert(newArray, position, DataStreamUtils.DeepFreeze(element))
-		elseif kind == "r" then
+		else
 			if position < 1 or position > #newArray then
-				Resync(name)
-				return
+				return false
 			end
 			table.remove(newArray, position)
-		else
-			Resync(name)
-			return
 		end
 		value = newArray
 	else
-		value = ApplyTransportRepairs(name, decodedPath, value, repairs)
+		value = ApplyTransportRepairs(name, path, value, repairs)
 	end
 	value = DataStreamUtils.DeepFreeze(value)
 
 	local oldValue = nil
-	if #decodedPath == 0 then
+	if #path == 0 then
 		oldValue = table.freeze(table.clone(RealData[name]))
 		UpdateRoot(name, value)
 	else
 		local didSet
-		didSet, oldValue = DataStreamUtils.SetValueAtPath(RealData[name], decodedPath, value)
+		didSet, oldValue = DataStreamUtils.SetValueAtPath(RealData[name], path, value)
 		if not didSet then
-			warn("Path error | " .. DataStreamUtils.StringifyPathTable(decodedPath))
-			Resync(name)
-			return
+			warn("Path error | " .. DataStreamUtils.StringifyPathTable(path))
+			return false
 		end
 	end
 
 	-- A set-write replaced the subtree at this path; pending refs under it that
 	-- this update didn't re-register point at discarded data. (Ops are deltas —
 	-- they invalidate nothing.)
-	if not op then
-		PrunePendingUnder(name, decodedPath)
+	if not opKind then
+		PrunePendingUnder(name, path)
 	end
 
-	ClientMeta:PathChanged(name, decodedPath, value, oldValue, RealData[name])
+	ClientMeta:PathChanged(name, path, value, oldValue, RealData[name])
+	return true
+end
+
+-- Unpacks a batch (layout in DataStreamWire) without touching any state, so a
+-- malformed one can't leave half its updates applied.
+local function DecodeBatch(header : buffer, items : {any})
+	local entries = {}
+	local cursor = 0
+	local itemIndex = 0
+	local sequence = 0
+
+	local function nextItem() : any
+		itemIndex += 1
+		local item = items[itemIndex]
+		if item == nil then
+			error("batch is missing item " .. itemIndex)
+		end
+		return item
+	end
+
+	local function nextPath() : {any}
+		local path = nextItem()
+		if type(path) ~= "table" then
+			error("batch path is a " .. type(path))
+		end
+		return path
+	end
+
+	while cursor < buffer.len(header) do
+		local delta, flags
+		delta, cursor = DataStreamWire.ReadVarint(header, cursor)
+		flags, cursor = DataStreamWire.ReadU8(header, cursor)
+		sequence += delta
+
+		local entry = {
+			Sequence = sequence,
+			PathMode = bit32.band(flags, DataStreamWire.PATH_MODE_MASK),
+			ClearsPaths = bit32.btest(flags, DataStreamWire.CLEAR_PATHS),
+		}
+
+		if entry.PathMode == DataStreamWire.PATH_BY_ID or entry.PathMode == DataStreamWire.PATH_DEFINE then
+			entry.PathId, cursor = DataStreamWire.ReadVarint(header, cursor)
+		end
+		if entry.PathMode == DataStreamWire.PATH_INLINE or entry.PathMode == DataStreamWire.PATH_DEFINE then
+			entry.Path = nextPath()
+		end
+		if bit32.btest(flags, DataStreamWire.HAS_REPAIRS) then
+			entry.Repairs = nextItem()
+		end
+		if bit32.btest(flags, DataStreamWire.HAS_VALUE) then
+			entry.Value = nextItem()
+		end
+
+		local opFlags = bit32.band(flags, DataStreamWire.OP_MASK)
+		if opFlags == DataStreamWire.OP_INSERT then
+			entry.OpKind = "i"
+		elseif opFlags == DataStreamWire.OP_REMOVE then
+			entry.OpKind = "r"
+		elseif opFlags ~= 0 then
+			error("unknown array op flags " .. opFlags)
+		end
+		if entry.OpKind then
+			entry.Position, cursor = DataStreamWire.ReadVarint(header, cursor)
+		end
+
+		if bit32.btest(flags, DataStreamWire.HAS_FREES) then
+			local count
+			count, cursor = DataStreamWire.ReadVarint(header, cursor)
+			local frees = {}
+			for index = 1, count do
+				frees[index], cursor = DataStreamWire.ReadVarint(header, cursor)
+			end
+			entry.Frees = frees
+		end
+
+		table.insert(entries, entry)
+	end
+
+	if itemIndex ~= #items then
+		error("batch has " .. (#items - itemIndex) .. " unread items")
+	end
+
+	return entries
+end
+
+-- Applies a batch in entry order. Per entry: its define, its update, then its
+-- frees, so an entry can still use an id it frees.
+local function ApplyBatch(name : string, header : buffer, items : {any}?)
+	local decoded, entries = pcall(DecodeBatch, header, items or {})
+	if not decoded then
+		warn("Malformed update batch |", entries)
+		Resync(name)
+		return
+	end
+
+	local paths = GetPaths(name)
+	for _, entry in entries do
+		local pathMode = entry.PathMode
+		if pathMode == DataStreamWire.PATH_DEFINE then
+			paths[entry.PathId] = table.freeze(entry.Path)
+		end
+
+		-- Updates already contained in a fetched snapshot arrive with a sequence
+		-- at or below the snapshot's — skip them. Set-writes would merely be
+		-- redundant, but array ops would double-apply. Their defines and frees
+		-- still apply: the snapshot's path list can predate them (an update
+		-- written before the GetData but flushed after it), and later updates
+		-- rely on them.
+		local lastSequence = LastSequence[name]
+		if lastSequence == nil or entry.Sequence > lastSequence then
+			LastSequence[name] = entry.Sequence
+
+			local path
+			if pathMode == DataStreamWire.PATH_ROOT then
+				path = ROOT_PATH
+			elseif pathMode == DataStreamWire.PATH_INLINE then
+				path = DecodePath(entry.Path)
+			else
+				path = paths[entry.PathId]
+			end
+
+			-- The server sent this whole batch before it can answer the re-sync,
+			-- so the snapshot covers the rest of it; stop here.
+			if not path or not ApplyUpdate(name, path, entry.Value, entry.Repairs, entry.OpKind, entry.Position) then
+				Resync(name)
+				return
+			end
+		end
+
+		if entry.Frees then
+			for _, id in entry.Frees do
+				paths[id] = nil
+			end
+		end
+		if entry.ClearsPaths then
+			table.clear(paths)
+		end
+	end
 end
 
 --= Initializers =--
@@ -522,7 +663,7 @@ do
 			if not DidFetch then
 				table.insert(UpdateCache, {Name = name, Args = table.pack(...)})
 			else
-				UpdateData(name, ...)
+				ApplyBatch(name, ...)
 			end
 		end)
 	end)
@@ -530,6 +671,7 @@ do
 	--// Fetch stores from server
 	for name, schemaInfo in pairs(GetDataFunction:InvokeServer()) do
 		LastSequence[name] = schemaInfo.Seq or 0
+		MergePathSnapshot(name, schemaInfo.Paths)
 		local data = ApplyTransportRepairs(name, {}, schemaInfo.Data, schemaInfo.Repairs)
 		if type(data) == "table" then
 			RealData[name] = DataStreamUtils.FreezeChildren(data)
@@ -542,7 +684,7 @@ do
 
 	--// Update data from cache after fetch
 	for _, update in ipairs(UpdateCache) do
-		UpdateData(update.Name, table.unpack(update.Args, 1, update.Args.n))
+		ApplyBatch(update.Name, table.unpack(update.Args, 1, update.Args.n))
 	end
 	UpdateCache = {}
 end

@@ -279,7 +279,8 @@ do
             return {
                 Data = valueForTransport,
                 Repairs = repairs,
-                Seq = DataStreamMeta:GetSequence(name, ownerPlayer)
+                Seq = DataStreamMeta:GetSequence(name, ownerPlayer),
+                Paths = DataStreamMeta:GetPathSnapshot(name, ownerPlayer)
             }
         end
 
