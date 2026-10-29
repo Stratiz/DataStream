@@ -294,7 +294,8 @@ end
 --          same-named instances can never collide
 --   "I" -> non-string, non-Instance key moved to a unique placeholder ("\2" .. n)
 -- Dense arrays keep their numeric keys as-is (the serializer handles them
--- faithfully), so they don't generate per-element repair entries.
+-- faithfully), so they don't generate per-element repair entries — unless
+-- stripping an Instance element would leave a hole (see below).
 function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
     local repairs = {}
     local placeholderCounter = 0
@@ -308,7 +309,23 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
                 return false
             end
         end
-        return keyCount == arrayLength
+        if keyCount ~= arrayLength then
+            return false
+        end
+
+        -- Instance elements are stripped to nil (their "V" repair restores
+        -- them), so one followed by a non-Instance element would ship an array
+        -- with a hole, which remotes don't carry intact. Such arrays take the
+        -- keyed path below. Trailing Instances (or all-Instance arrays) are fine.
+        local sawInstance = false
+        for _, child in ipairs(targetValue) do
+            if typeof(child) == "Instance" then
+                sawInstance = true
+            elseif sawInstance then
+                return false
+            end
+        end
+        return true
     end
 
     local function walk(targetValue, targetPathTable)
