@@ -21,10 +21,8 @@
         Values can be nil, so they get a flag instead of a slot: remote arrays
         don't survive nil holes.
 
-        Path ids are per stream and never reused, so every define and free is
-        safe to replay (clients replay them from updates a snapshot already
-        contains). An id is defined by the first update that sends its path,
-        and freed by the update that removes the data at that path.
+        Path ids are per stream and never reused, so clients can safely replay
+        defines and frees from updates a snapshot already contains.
 
 --]]
 

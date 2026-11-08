@@ -294,7 +294,7 @@ end
 --          same-named instances can never collide
 --   "I" -> non-string, non-Instance key moved to a unique placeholder ("\2" .. n)
 -- Dense arrays keep their numeric keys as-is (the serializer handles them
--- faithfully), so they don't generate per-element repair entries — unless
+-- faithfully), so they don't generate per-element repair entries, unless
 -- stripping an Instance element would leave a hole (see below).
 function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
     local repairs = {}
@@ -313,10 +313,9 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
             return false
         end
 
-        -- Instance elements are stripped to nil (their "V" repair restores
-        -- them), so one followed by a non-Instance element would ship an array
-        -- with a hole, which remotes don't carry intact. Such arrays take the
-        -- keyed path below. Trailing Instances (or all-Instance arrays) are fine.
+        -- Instance elements ship as nil (their "V" repair restores them), so one
+        -- before a non-Instance element leaves a hole remotes don't carry. Those
+        -- arrays take the keyed path. Trailing Instances are fine.
         local sawInstance = false
         for _, child in ipairs(targetValue) do
             if typeof(child) == "Instance" then
@@ -410,21 +409,18 @@ function DataMeta:EnableReplicationForPlayer(player : Player)
 end
 
 --// Replication queue --------------------------------------------------------
--- Writes are coalesced per resumption cycle instead of firing a remote each:
--- a plain set supersedes any queued write at the same or a descendant path,
--- back to the last array op above it (its frozen snapshot already contains
--- that state), so rapid-fire writes to one path ship once. What's left goes
--- out as one batch per stream per flush
--- (see DataStreamWire). Every update carries a per-stream sequence number, and
--- GetData snapshots report the sequence they contain — that lets clients drop
--- updates already baked into a snapshot, which matters because array ops (see
--- Insert/Remove) are not idempotent the way set-writes are.
+-- Writes are coalesced per resumption cycle: a plain set supersedes queued
+-- writes at the same or a descendant path, back to the last array op above it
+-- (its frozen snapshot already holds that state). What's left goes out as one
+-- batch per stream per flush (see DataStreamWire). Every update carries a
+-- per-stream sequence number and GetData snapshots report theirs, so clients
+-- can drop updates a snapshot already contains. Needed because array ops
+-- (Insert/Remove) aren't idempotent like set-writes.
 
 local ReplicationQueue = {}
 local FlushScheduled = false
--- Both keyed by stream key, so they outlive the stream object: a player stream
--- removed and re-made keeps counting where it left off, and clients never see
--- a sequence number or path id reused.
+-- Keyed by stream key so they outlive the stream object: a stream removed and
+-- re-made keeps counting, so clients never see a sequence or path id reused.
 local SequenceCounters = {}
 local PathDictionaries = {}
 
@@ -457,15 +453,14 @@ function DataMeta:GetSequence(name : string, owner : Player?) : number
     return SequenceCounters[GetStreamKey(name, owner)] or 0
 end
 
--- The stream's live path ids, for GetData snapshots. Clients that join (or
--- re-sync) after an id was defined learn it from here.
+-- Live path ids for GetData, so clients that join or re-sync learn earlier defines.
 function DataMeta:GetPathSnapshot(name : string, owner : Player?) : {any}
     return DataStreamPathIds.Snapshot(GetPathDictionary(GetStreamKey(name, owner)))
 end
 
 -- Packs one stream's queued entries into a batch (layout in DataStreamWire).
--- Ids are assigned and freed here, at send time, never at write time:
--- coalescing can drop a queued entry, and a define riding on it would be lost.
+-- Ids are assigned and freed at send time, not write time: coalescing can drop
+-- a queued entry along with its define.
 local function EncodeBatch(pathIds : DataStreamPathIds.Dictionary, entries) : (buffer, {any}?)
     local writer = DataStreamWire.NewWriter()
     local items = {}
@@ -514,8 +509,7 @@ local function EncodeBatch(pathIds : DataStreamPathIds.Dictionary, entries) : (b
             flags += if op[1] == "i" then DataStreamWire.OP_INSERT else DataStreamWire.OP_REMOVE
         end
 
-        -- Free what this entry removed. Clients apply frees after the update,
-        -- so the entry can still use its own id.
+        -- Clients apply frees after the update, so this entry can still use its id.
         local frees = nil
         if op == nil then
             if isRoot and type(value) ~= "table" then
@@ -606,10 +600,9 @@ function DataMeta:TriggerReplicate(owner, name, pathTable, value, op)
             local entry = ReplicationQueue[index]
             if entry.Owner == owner and entry.Name == name then
                 if entry.Op and #entry.PathTable < #pathTable and IsPathPrefixOf(entry.PathTable, pathTable) then
-                    -- An array op above this path shifted positions, and may rely
-                    -- on writes queued before it: write Arr[3], Arr:Remove(1), write
-                    -- Arr[3] — the second write is a different element. Nothing
-                    -- queued before the op is superseded.
+                    -- An array op above this path shifts positions and may rely on
+                    -- earlier writes (write Arr[3], Arr:Remove(1), write Arr[3] hits
+                    -- a different element). Nothing queued before it is superseded.
                     break
                 elseif IsPathPrefixOf(pathTable, entry.PathTable) then
                     table.remove(ReplicationQueue, index)

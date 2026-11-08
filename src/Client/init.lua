@@ -416,9 +416,9 @@ local function GetPaths(name : string) : {[number] : {any}}
 	return paths
 end
 
--- Adds a GetData snapshot's path ids ({id, path, id, path, ...}). Merges rather
--- than replaces: ids are never reused, so a stale entry is only dead weight,
--- while dropping one that a queued update still needs would force a re-sync.
+-- flatPaths is {id, path, id, path, ...}. Merged, never replaced: ids aren't
+-- reused, so stale entries are harmless, but dropping one a queued update
+-- needs would force a re-sync.
 local function MergePathSnapshot(name : string, flatPaths : {any}?)
 	local paths = GetPaths(name)
 	if not flatPaths then
@@ -456,8 +456,8 @@ local function Resync(name : string)
 	ClientMeta:PathChanged(name, {}, RealData[name], oldRoot, RealData[name])
 end
 
--- Applies one update at an already-decoded path. Returns false when local state
--- can't support it (the client is desynced); the caller re-syncs.
+-- path is already decoded. Returns false when local state can't support the
+-- update (desynced); the caller re-syncs.
 local function ApplyUpdate(name : string, path : {any}, value : any, repairs, opKind : string?, position : number?) : boolean
 	UpdateGeneration += 1
 
@@ -466,8 +466,7 @@ local function ApplyUpdate(name : string, path : {any}, value : any, repairs, op
 	end
 
 	if opKind then
-		-- Array delta: value is the inserted element for "i". Applied to a clone
-		-- of the local array.
+		-- Array delta: value is the inserted element for "i".
 		local currentArray = if #path == 0 then RealData[name] else DataStreamUtils.GetValueAtPath(RealData[name], path)
 		if type(currentArray) ~= "table" then
 			return false
@@ -600,8 +599,7 @@ local function DecodeBatch(header : buffer, items : {any})
 	return entries
 end
 
--- Applies a batch in entry order. Per entry: its define, its update, then its
--- frees, so an entry can still use an id it frees.
+-- Per entry: define, update, then frees, so an entry can use an id it frees.
 local function ApplyBatch(name : string, header : buffer, items : {any}?)
 	local decoded, entries = pcall(DecodeBatch, header, items or {})
 	if not decoded then
@@ -617,12 +615,9 @@ local function ApplyBatch(name : string, header : buffer, items : {any}?)
 			paths[entry.PathId] = table.freeze(entry.Path)
 		end
 
-		-- Updates already contained in a fetched snapshot arrive with a sequence
-		-- at or below the snapshot's — skip them. Set-writes would merely be
-		-- redundant, but array ops would double-apply. Their defines and frees
-		-- still apply: the snapshot's path list can predate them (an update
-		-- written before the GetData but flushed after it), and later updates
-		-- rely on them.
+		-- Skip updates the snapshot already contains (array ops would double-apply).
+		-- Their defines and frees still run: the snapshot's path list can predate
+		-- them (written before GetData, flushed after) and later updates need them.
 		local lastSequence = LastSequence[name]
 		if lastSequence == nil or entry.Sequence > lastSequence then
 			LastSequence[name] = entry.Sequence
@@ -636,8 +631,7 @@ local function ApplyBatch(name : string, header : buffer, items : {any}?)
 				path = paths[entry.PathId]
 			end
 
-			-- The server sent this whole batch before it can answer the re-sync,
-			-- so the snapshot covers the rest of it; stop here.
+			-- The re-sync snapshot covers the rest of this batch, which the server sent first.
 			if not path or not ApplyUpdate(name, path, entry.Value, entry.Repairs, entry.OpKind, entry.Position) then
 				Resync(name)
 				return

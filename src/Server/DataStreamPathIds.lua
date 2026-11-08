@@ -3,18 +3,15 @@
     Stratiz
 
     Description:
-        Per-stream dictionary of path ids, so replication batches can send a small
-        number instead of a full path (see DataStreamWire). It mirrors what the
-        stream's clients know: an id is defined the first time its path is sent,
-        and freed when the data at that path goes away (a nil write, a parent
-        replaced without that key, an array shrinking). The dictionary follows
-        live data, so keys that come and go (UserIds, item ids) don't fill it up.
+        Per-stream path ids, so replication batches can send a number instead of
+        a full path (see DataStreamWire). Mirrors what the stream's clients know:
+        an id is defined the first time its path is sent and freed when the data
+        there goes away (nil write, parent replaced without the key, array
+        shrink), so keys that come and go (UserIds, item ids) don't fill it up.
+        Ids are never reused within a stream.
 
-        Ids are never reused within a stream: NextId only counts up.
-
-        Only paths made of string and number keys get ids. Paths through an
-        Instance key are sent inline: holding them here would pin destroyed
-        instances, and clients resolve those keys by ref id anyway.
+        Only paths of string and number keys get ids. Paths through an Instance
+        key are sent inline, since holding them here would pin destroyed instances.
 
 --]]
 
@@ -24,7 +21,7 @@ local DataStreamPathIds = { }
 --= Constants =--
 
 -- Safety rail, not a working limit: frees keep the live count near the number
--- of distinct written paths in live data. Past it, new paths are sent inline.
+-- of written paths still in live data. Past it, new paths are sent inline.
 local MAX_LIVE_IDS = 65536
 
 --= Types =--
