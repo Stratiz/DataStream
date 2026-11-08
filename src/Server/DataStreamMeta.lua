@@ -20,6 +20,8 @@ local Signal = require(script.Parent.Parent:WaitForChild("Packages"):WaitForChil
 local DataStreamUtils = require(script.Parent.Parent.Shared:WaitForChild("DataStreamUtils"))
 local DataStreamRemotes = require(script.Parent.Parent.Shared:WaitForChild("DataStreamRemotes"))
 local DataStreamInstanceRefs = require(script.Parent.Parent.Shared:WaitForChild("DataStreamInstanceRefs"))
+local DataStreamWire = require(script.Parent.Parent.Shared:WaitForChild("DataStreamWire"))
+local DataStreamPathIds = require(script.Parent:WaitForChild("DataStreamPathIds"))
 
 --= Object References =--
 
@@ -292,7 +294,8 @@ end
 --          same-named instances can never collide
 --   "I" -> non-string, non-Instance key moved to a unique placeholder ("\2" .. n)
 -- Dense arrays keep their numeric keys as-is (the serializer handles them
--- faithfully), so they don't generate per-element repair entries.
+-- faithfully), so they don't generate per-element repair entries, unless
+-- stripping an Instance element would leave a hole (see below).
 function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
     local repairs = {}
     local placeholderCounter = 0
@@ -306,7 +309,22 @@ function DataMeta:PrepareValueForTransport(value : any) : ({{any}}, any)
                 return false
             end
         end
-        return keyCount == arrayLength
+        if keyCount ~= arrayLength then
+            return false
+        end
+
+        -- Instance elements ship as nil (their "V" repair restores them), so one
+        -- before a non-Instance element leaves a hole remotes don't carry. Those
+        -- arrays take the keyed path. Trailing Instances are fine.
+        local sawInstance = false
+        for _, child in ipairs(targetValue) do
+            if typeof(child) == "Instance" then
+                sawInstance = true
+            elseif sawInstance then
+                return false
+            end
+        end
+        return true
     end
 
     local function walk(targetValue, targetPathTable)
@@ -391,20 +409,32 @@ function DataMeta:EnableReplicationForPlayer(player : Player)
 end
 
 --// Replication queue --------------------------------------------------------
--- Writes are coalesced per resumption cycle instead of firing a remote each:
--- a plain set supersedes any queued write at the same or a descendant path
--- (its frozen snapshot already contains that state), so rapid-fire writes to
--- one path ship once. Every update carries a per-stream sequence number, and
--- GetData snapshots report the sequence they contain — that lets clients drop
--- updates already baked into a snapshot, which matters because array ops (see
--- Insert/Remove) are not idempotent the way set-writes are.
+-- Writes are coalesced per resumption cycle: a plain set supersedes queued
+-- writes at the same or a descendant path, back to the last array op above it
+-- (its frozen snapshot already holds that state). What's left goes out as one
+-- batch per stream per flush (see DataStreamWire). Every update carries a
+-- per-stream sequence number and GetData snapshots report theirs, so clients
+-- can drop updates a snapshot already contains. Needed because array ops
+-- (Insert/Remove) aren't idempotent like set-writes.
 
 local ReplicationQueue = {}
 local FlushScheduled = false
+-- Keyed by stream key so they outlive the stream object: a stream removed and
+-- re-made keeps counting, so clients never see a sequence or path id reused.
 local SequenceCounters = {}
+local PathDictionaries = {}
 
 local function GetStreamKey(name : string, owner : Player?) : string
     return name .. "\0" .. (if owner then tostring(owner.UserId) else "")
+end
+
+local function GetPathDictionary(streamKey : string) : DataStreamPathIds.Dictionary
+    local dictionary = PathDictionaries[streamKey]
+    if not dictionary then
+        dictionary = DataStreamPathIds.new()
+        PathDictionaries[streamKey] = dictionary
+    end
+    return dictionary
 end
 
 local function IsPathPrefixOf(prefix : {any}, pathTable : {any}) : boolean
@@ -423,29 +453,160 @@ function DataMeta:GetSequence(name : string, owner : Player?) : number
     return SequenceCounters[GetStreamKey(name, owner)] or 0
 end
 
-local function SendReplication(entry)
-    local repairs, valueForTransport = DataMeta:PrepareValueForTransport(entry.Value)
-    local pathForTransport = EncodePathForTransport(entry.PathTable)
+-- Live path ids for GetData, so clients that join or re-sync learn earlier defines.
+function DataMeta:GetPathSnapshot(name : string, owner : Player?) : {any}
+    return DataStreamPathIds.Snapshot(GetPathDictionary(GetStreamKey(name, owner)))
+end
 
-    local targetEvent = DataStreamRemotes:Get("Event", entry.Name)
-    if entry.Owner then
-        if ReplicatingToPlayers[entry.Owner] then
-            targetEvent:FireClient(entry.Owner, entry.Seq, pathForTransport, valueForTransport, repairs, entry.Op)
+-- Packs one stream's queued entries into a batch (layout in DataStreamWire).
+-- Ids are assigned and freed at send time, not write time: coalescing can drop
+-- a queued entry along with its define.
+local function EncodeBatch(pathIds : DataStreamPathIds.Dictionary, entries) : (buffer, {any}?)
+    local writer = DataStreamWire.NewWriter()
+    local items = {}
+    local previousSeq = 0
+
+    for _, entry in entries do
+        local pathTable, value, op = entry.PathTable, entry.Value, entry.Op
+        local isRoot = #pathTable == 0
+        local flags
+        local pathId = nil
+
+        if isRoot then
+            flags = DataStreamWire.PATH_ROOT
+        else
+            local isNew = false
+            if op == nil and value == nil then
+                -- A removal never defines: the id would be freed right after.
+                pathId = DataStreamPathIds.Lookup(pathIds, pathTable)
+            else
+                pathId, isNew = DataStreamPathIds.Intern(pathIds, pathTable)
+            end
+
+            if pathId == nil then
+                flags = DataStreamWire.PATH_INLINE
+                table.insert(items, EncodePathForTransport(pathTable))
+            elseif isNew then
+                -- Interned paths hold only string/number keys; no encoding needed.
+                flags = DataStreamWire.PATH_DEFINE
+                table.insert(items, pathTable)
+            else
+                flags = DataStreamWire.PATH_BY_ID
+            end
         end
+
+        local repairs, valueForTransport = DataMeta:PrepareValueForTransport(value)
+        if #repairs > 0 then
+            flags += DataStreamWire.HAS_REPAIRS
+            table.insert(items, repairs)
+        end
+        if valueForTransport ~= nil then
+            flags += DataStreamWire.HAS_VALUE
+            table.insert(items, valueForTransport)
+        end
+
+        if op then
+            flags += if op[1] == "i" then DataStreamWire.OP_INSERT else DataStreamWire.OP_REMOVE
+        end
+
+        -- Clients apply frees after the update, so this entry can still use its id.
+        local frees = nil
+        if op == nil then
+            if isRoot and type(value) ~= "table" then
+                DataStreamPathIds.Reset(pathIds)
+                flags += DataStreamWire.CLEAR_PATHS
+            else
+                frees = DataStreamPathIds.FreeStale(pathIds, pathTable, value)
+            end
+        elseif op[1] == "r" then
+            frees = DataStreamPathIds.FreeArrayTail(pathIds, pathTable, op[3])
+        end
+        if frees then
+            flags += DataStreamWire.HAS_FREES
+        end
+
+        DataStreamWire.WriteVarint(writer, entry.Seq - previousSeq)
+        previousSeq = entry.Seq
+        DataStreamWire.WriteU8(writer, flags)
+        if pathId then
+            DataStreamWire.WriteVarint(writer, pathId)
+        end
+        if op then
+            DataStreamWire.WriteVarint(writer, op[2])
+        end
+        if frees then
+            DataStreamWire.WriteVarint(writer, #frees)
+            for _, id in frees do
+                DataStreamWire.WriteVarint(writer, id)
+            end
+        end
+    end
+
+    return DataStreamWire.Finish(writer), if #items > 0 then items else nil
+end
+
+-- entries all belong to one stream, in queue order.
+local function SendBatch(streamKey : string, entries)
+    local name, owner = entries[1].Name, entries[1].Owner
+
+    if owner and not ReplicatingToPlayers[owner] then
+        -- Nothing reaches a player before their first GetData, so their
+        -- dictionary stays empty until then, matching the snapshot they fetch.
+        return
+    end
+
+    local header, items = EncodeBatch(GetPathDictionary(streamKey), entries)
+
+    local targetEvent = DataStreamRemotes:Get("Event", name)
+    if owner then
+        targetEvent:FireClient(owner, header, items)
     else
-        targetEvent:FireAllClients(entry.Seq, pathForTransport, valueForTransport, repairs, entry.Op)
+        targetEvent:FireAllClients(header, items)
     end
 end
 
--- op is nil for a plain set, or {"i", position} / {"r", position} for array ops
--- (value = the inserted element for "i", nil for "r").
+local function FlushReplicationQueue()
+    FlushScheduled = false
+    local queue = ReplicationQueue
+    ReplicationQueue = {}
+
+    -- Group by stream, keeping queue order within each stream. Streams are
+    -- independent (own remote, own sequence), so batches go out in order of
+    -- each stream's first queued write.
+    local batches = {}
+    local streamOrder = {}
+    for _, entry in queue do
+        local streamKey = GetStreamKey(entry.Name, entry.Owner)
+        local batch = batches[streamKey]
+        if not batch then
+            batch = {}
+            batches[streamKey] = batch
+            table.insert(streamOrder, streamKey)
+        end
+        table.insert(batch, entry)
+    end
+
+    for _, streamKey in streamOrder do
+        SendBatch(streamKey, batches[streamKey])
+    end
+end
+
+-- op is nil for a plain set, or {"i", position} / {"r", position, newLength}
+-- for array ops (value = the inserted element for "i", nil for "r").
 function DataMeta:TriggerReplicate(owner, name, pathTable, value, op)
     -- Ops are deltas, not snapshots — they never supersede anything.
     if not op then
         for index = #ReplicationQueue, 1, -1 do
             local entry = ReplicationQueue[index]
-            if entry.Owner == owner and entry.Name == name and IsPathPrefixOf(pathTable, entry.PathTable) then
-                table.remove(ReplicationQueue, index)
+            if entry.Owner == owner and entry.Name == name then
+                if entry.Op and #entry.PathTable < #pathTable and IsPathPrefixOf(entry.PathTable, pathTable) then
+                    -- An array op above this path shifts positions and may rely on
+                    -- earlier writes (write Arr[3], Arr:Remove(1), write Arr[3] hits
+                    -- a different element). Nothing queued before it is superseded.
+                    break
+                elseif IsPathPrefixOf(pathTable, entry.PathTable) then
+                    table.remove(ReplicationQueue, index)
+                end
             end
         end
     end
@@ -468,14 +629,7 @@ function DataMeta:TriggerReplicate(owner, name, pathTable, value, op)
 
     if not FlushScheduled then
         FlushScheduled = true
-        task.defer(function()
-            FlushScheduled = false
-            local queue = ReplicationQueue
-            ReplicationQueue = {}
-            for _, entry in queue do
-                SendReplication(entry)
-            end
-        end)
+        task.defer(FlushReplicationQueue)
     end
 end
 
@@ -658,6 +812,9 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
                         position = packedArgs[1]
                         elementForTransport = DataStreamUtils.DeepCopyAndFreeze(packedArgs[2])
                         table.insert(newTable, position, elementForTransport)
+                        -- table.insert accepted it, so it's numeric; send the
+                        -- whole-number position it actually used.
+                        position = math.floor(tonumber(position))
                     else
                         elementForTransport = DataStreamUtils.DeepCopyAndFreeze(packedArgs[1])
                         table.insert(newTable, elementForTransport)
@@ -667,7 +824,8 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
                 else
                     local position = table.pack(...)[1] or #newTable
                     table.remove(newTable, position)
-                    opForTransport = {"r", position}
+                    -- The new length is server-only: it says which index ids to free.
+                    opForTransport = {"r", math.floor(tonumber(position)), #newTable}
                 end
                 table.freeze(newTable)
 
@@ -708,6 +866,11 @@ do
         for key in pairs(SequenceCounters) do
             if string.sub(key, -#streamKeySuffix) == streamKeySuffix then
                 SequenceCounters[key] = nil
+            end
+        end
+        for key in pairs(PathDictionaries) do
+            if string.sub(key, -#streamKeySuffix) == streamKeySuffix then
+                PathDictionaries[key] = nil
             end
         end
 
