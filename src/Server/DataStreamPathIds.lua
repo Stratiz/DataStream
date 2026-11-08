@@ -227,7 +227,7 @@ end
 
 -- Flat {id, path, id, path, ...} list of every live id, for GetData snapshots.
 function DataStreamPathIds.Snapshot(dictionary : Dictionary) : {any}
-    local flat = {}
+    local flat : {any} = {}
 
     local function walk(node : Node, pathTable : {any})
         if node.Id then

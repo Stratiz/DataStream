@@ -473,19 +473,20 @@ local function ApplyUpdate(name : string, path : {any}, value : any, repairs, op
 		end
 
 		local newArray = table.clone(currentArray)
+		local index = position :: number
 		if opKind == "i" then
-			if position < 1 or position > #newArray + 1 then
+			if index < 1 or index > #newArray + 1 then
 				return false
 			end
 			local elementPath = table.clone(path)
-			table.insert(elementPath, position)
+			table.insert(elementPath, index)
 			local element = ApplyTransportRepairs(name, elementPath, value, repairs)
-			table.insert(newArray, position, DataStreamUtils.DeepFreeze(element))
+			table.insert(newArray, index, DataStreamUtils.DeepFreeze(element))
 		else
-			if position < 1 or position > #newArray then
+			if index < 1 or index > #newArray then
 				return false
 			end
-			table.remove(newArray, position)
+			table.remove(newArray, index)
 		end
 		value = newArray
 	else

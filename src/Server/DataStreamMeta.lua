@@ -814,7 +814,7 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
                         table.insert(newTable, position, elementForTransport)
                         -- table.insert accepted it, so it's numeric; send the
                         -- whole-number position it actually used.
-                        position = math.floor(tonumber(position))
+                        position = math.floor(tonumber(position) :: number)
                     else
                         elementForTransport = DataStreamUtils.DeepCopyAndFreeze(packedArgs[1])
                         table.insert(newTable, elementForTransport)
@@ -825,7 +825,7 @@ function DataMeta:MakeDataStreamObject(name : string, schema : {[any] : any}, ow
                     local position = table.pack(...)[1] or #newTable
                     table.remove(newTable, position)
                     -- The new length is server-only: it says which index ids to free.
-                    opForTransport = {"r", math.floor(tonumber(position)), #newTable}
+                    opForTransport = {"r", math.floor(tonumber(position) :: number), #newTable}
                 end
                 table.freeze(newTable)
 
